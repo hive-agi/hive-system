@@ -1,0 +1,5 @@
+{:project-id "hive-system"
+ :parent "hive"
+ :description "Temporal execution fabric + systems programming foundation. Datahike/Proximum-backed journaling of all operations with ROP Result ADT. Low-level wrappers (process, network, filesystem, crypto) with protocol-based extensibility."
+ :language :clojure
+ :tags ["system" "temporal" "datahike" "proximum" "rop" "process" "network" "filesystem"]}

@@ -6,10 +6,10 @@
         io.github.hive-agi/hive-dsl {:local/root "../hive-dsl"}
 
         ;; Datahike — Clojure-native Datalog database (temporal storage)
-        io.replikativ/datahike {:mvn/version "0.6.1588"}
+        io.replikativ/datahike {:mvn/version "0.7.1624"}
 
         ;; Logging
-        com.taoensso/timbre {:mvn/version "6.6.1"}}
+        com.taoensso/timbre {:mvn/version "6.8.0"}}
 
  :aliases
  {:dev {:extra-paths ["dev" "test"]

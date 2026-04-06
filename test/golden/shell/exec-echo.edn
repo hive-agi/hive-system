@@ -1,0 +1,5 @@
+{:ok
+ {:exit 0,
+  :stdout "deterministic\n",
+  :stderr "",
+  :cmd "echo deterministic"}}

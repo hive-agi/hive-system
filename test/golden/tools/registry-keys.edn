@@ -1,0 +1,20 @@
+#{:find
+  :tree
+  :jq
+  :bat
+  :fd
+  :grep
+  :git
+  :tokei
+  :dust
+  :ls
+  :kubectl
+  :cloudflared
+  :delta
+  :procs
+  :fzf
+  :htop
+  :ripgrep
+  :sd
+  :tmux
+  :ps}

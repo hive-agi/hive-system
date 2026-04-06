@@ -5,6 +5,9 @@
         ;; Result ADT + DSL macros (railway-oriented programming)
         io.github.hive-agi/hive-dsl {:git/tag "v0.3.8" :git/sha "6f44e1b"}
 
+        ;; Filesystem utilities (which, glob, exists?, list-dir, etc.)
+        babashka/fs {:mvn/version "0.5.32"}
+
         ;; Datahike — Clojure-native Datalog database (temporal storage)
         io.replikativ/datahike {:mvn/version "0.7.1624"}
 

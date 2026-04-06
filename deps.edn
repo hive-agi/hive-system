@@ -5,6 +5,9 @@
         ;; Result ADT + DSL macros (railway-oriented programming)
         io.github.hive-agi/hive-dsl {:git/tag "v0.3.9" :git/sha "494af2c"}
 
+        ;; Event system (interceptors, effects/coeffects, FSM)
+        io.github.hive-agi/hive-events {:git/tag "v0.5.1" :git/sha "ac48b40"}
+
         ;; Filesystem utilities (which, glob, exists?, list-dir, etc.)
         babashka/fs {:mvn/version "0.5.32"}
 

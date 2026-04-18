@@ -68,6 +68,24 @@
   (fs-tmpdir! [this prefix]
     "Create temporary directory. Returns Result with {:path}."))
 
+(defprotocol IPathQuery
+  "Path predicates and resolution. Pure queries — no mutation.
+   SRP: separated from IFilesystem (which handles watch/write/lock).
+   All return Result for railway composition via ok->/let-ok."
+  (path-exists? [this path]
+    "Check path existence. Returns Result<boolean>.")
+  (path-directory? [this path]
+    "Check if path is directory. Returns Result<boolean>.")
+  (path-file? [this path]
+    "Check if path is regular file. Returns Result<boolean>.")
+  (path-absolute? [this path]
+    "Check if path is absolute. Returns Result<boolean> (pure, no IO).")
+  (path-resolve [this base segments]
+    "Join + normalize path segments. Returns Result<string>.")
+  (path-children [this dir opts]
+    "List immediate children. opts: {:filter :dirs|:files|:all, :skip #{names}}.
+     Returns Result<vec<string>>."))
+
 (defprotocol IShell
   "Shell execution with capture."
   (shell-exec! [this cmd opts]

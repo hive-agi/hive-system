@@ -8,6 +8,9 @@
         ;; Event system (interceptors, effects/coeffects, FSM)
         io.github.hive-agi/hive-events {:git/tag "v0.5.1" :git/sha "ac48b40"}
 
+        ;; Bounded parallel execution (pmap, fork-join, gate)
+        io.github.hive-agi/hive-weave {:git/tag "v0.2.1" :git/sha "51bed201a6e43008624a9901ce2e5365758a459c"}
+
         ;; Filesystem utilities (which, glob, exists?, list-dir, etc.)
         babashka/fs {:mvn/version "0.5.32"}
 

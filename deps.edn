@@ -3,13 +3,13 @@
         org.clojure/core.async {:mvn/version "1.7.701"}
 
         ;; Result ADT + DSL macros (railway-oriented programming)
-        io.github.hive-agi/hive-dsl {:git/tag "v0.4.0" :git/sha "c561cb7"}
+        io.github.hive-agi/hive-dsl {:git/tag "v0.4.1" :git/sha "07ab02a"}
 
         ;; Event system (interceptors, effects/coeffects, FSM)
-        io.github.hive-agi/hive-events {:git/tag "v0.5.1" :git/sha "ac48b40"}
+        io.github.hive-agi/hive-events {:git/tag "v0.5.2" :git/sha "24a58a1"}
 
         ;; Bounded parallel execution (pmap, fork-join, gate)
-        io.github.hive-agi/hive-weave {:git/tag "v0.2.1" :git/sha "51bed201a6e43008624a9901ce2e5365758a459c"}
+        io.github.hive-agi/hive-weave {:git/tag "v0.2.2" :git/sha "7aa623423156480b25c4abea067f0aa5f98641d6"}
 
         ;; Filesystem utilities (which, glob, exists?, list-dir, etc.)
         babashka/fs {:mvn/version "0.5.32"}
@@ -29,5 +29,5 @@
                       io.github.cognitect-labs/test-runner
                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}
                       io.github.hive-agi/hive-test
-                      {:git/tag "v0.2.0" :git/sha "841da83"}}
+                      {:git/tag "v0.2.1" :git/sha "48b480f"}}
          :main-opts ["-m" "cognitect.test-runner"]}}}

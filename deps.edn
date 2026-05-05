@@ -18,7 +18,10 @@
         io.replikativ/datahike {:mvn/version "0.7.1624"}
 
         ;; Logging
-        com.taoensso/timbre {:mvn/version "6.8.0"}}
+        com.taoensso/timbre {:mvn/version "6.8.0"}
+
+        ;; JSON encoding for HTTP-bound GPU executors (ollama, vllm REST)
+        org.clojure/data.json {:mvn/version "2.5.1"}}
 
  :aliases
  {:dev {:extra-paths ["dev" "test"]

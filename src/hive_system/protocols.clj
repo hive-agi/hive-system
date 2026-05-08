@@ -96,14 +96,36 @@
     "Resolve program path. Returns Result with {:path} or err."))
 
 (defprotocol ICrypto
-  "Cryptographic operations."
-  (crypto-hash [this algorithm data]
-    "Hash data. Returns Result with {:hash :algorithm}.")
-  (crypto-sign! [this key data]
-    "Sign data. Returns Result with {:signature}.")
-  (crypto-verify [this key data signature]
-    "Verify signature. Returns Result with {:valid?}.")
-  (crypto-encrypt! [this key plaintext opts]
-    "Encrypt. Returns Result with {:ciphertext :iv}.")
-  (crypto-decrypt! [this key ciphertext opts]
-    "Decrypt. Returns Result with {:plaintext}."))
+  "Cryptographic operations.
+
+   Each method takes a single map (Parameter Object pattern) keyed under
+   the `:crypto/*` namespace. Returns hive-dsl Result.
+
+   Common keys:
+     :crypto/algorithm   keyword       — :xchacha20-poly1305, :hpke-x25519, :sha256, ...
+     :crypto/key         ^bytes        — symmetric key (32B AEAD) or signing key
+     :crypto/pubkey      ^bytes        — recipient public key (HPKE seal)
+     :crypto/keypair     {:public :private} — HPKE open
+     :crypto/plaintext   ^bytes
+     :crypto/ciphertext  ^bytes
+     :crypto/iv          ^bytes        — nonce / IV (24B XChaCha20)
+     :crypto/aad         ^bytes        — additional authenticated data / contextInfo
+     :crypto/data        ^bytes        — hash / sign / verify input
+     :crypto/signature   ^bytes        — verify input
+
+   Result shapes (also `:crypto/*` namespaced):
+     encrypt → {:ok {:crypto/ciphertext ... :crypto/iv ...}}
+     decrypt → {:ok {:crypto/plaintext ...}}
+     hash    → {:ok {:crypto/hash ... :crypto/algorithm ...}}
+     sign    → {:ok {:crypto/signature ...}}
+     verify  → {:ok {:crypto/valid? boolean}}"
+  (crypto-hash [this op-map]
+    "Hash :crypto/data with :crypto/algorithm.")
+  (crypto-sign! [this op-map]
+    "Sign :crypto/data with :crypto/key.")
+  (crypto-verify [this op-map]
+    "Verify :crypto/signature against :crypto/data with :crypto/key.")
+  (crypto-encrypt! [this op-map]
+    "Encrypt :crypto/plaintext under :crypto/key (or :crypto/pubkey for HPKE).")
+  (crypto-decrypt! [this op-map]
+    "Decrypt :crypto/ciphertext under :crypto/key (or :crypto/keypair for HPKE)."))

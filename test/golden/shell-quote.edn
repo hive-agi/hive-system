@@ -1,0 +1,10 @@
+{:backtick "'`whoami`'",
+ :dollar "'$VAR'",
+ :empty "''",
+ :nested-once "'ssh -o '\\''ProxyCommand=nc -x %h %p'\\'' r1'",
+ :percent "%h:%p",
+ :plain "simple",
+ :proxy-command "'ProxyCommand=nc -x 127.0.0.1:9050 -X 5 %h %p'",
+ :semicolon "'a;b'",
+ :single-quote "'a'\\''b'",
+ :space "'has space'"}

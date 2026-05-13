@@ -8,7 +8,8 @@
    Algorithms supported:
      :xchacha20-poly1305  — caesium.crypto.aead/xchacha20poly1305-ietf-{encrypt,decrypt}"
   (:require [hive-dsl.result :as r]
-            [hive-system.protocols :as proto]))
+            [hive-system.protocols :as proto]
+            [hive-system.crypto.kdf :as kdf]))
 
 (def ^:private xchacha-key-size 32)
 (def ^:private xchacha-nonce-size 24)
@@ -26,6 +27,19 @@
      :decrypt   (load 'caesium.crypto.aead/xchacha20poly1305-ietf-decrypt)
      :keygen    (load 'caesium.crypto.aead/xchacha20poly1305-ietf-keygen)
      :nonce-gen (load 'caesium.crypto.aead/new-xchacha20poly1305-ietf-nonce)}))
+
+(defn- resolve-pwhash!
+  "Returns {:pwhash fn :alg-argon2id13 int :salt-bytes int} or throws."
+  []
+  (let [load (fn [sym]
+               (or (requiring-resolve sym)
+                   (throw (ex-info "caesium not on classpath" {:sym sym}))))
+        pwhash-var     (load 'caesium.crypto.pwhash/pwhash)
+        alg-var        (load 'caesium.crypto.pwhash/alg-argon2id13)
+        salt-bytes-var (load 'caesium.crypto.pwhash/saltbytes)]
+    {:pwhash         pwhash-var
+     :alg-argon2id13 @alg-var
+     :salt-bytes     @salt-bytes-var}))
 
 (defn- check-key [k]
   (cond
@@ -61,7 +75,65 @@
      (catch Throwable t
        (r/err :crypto/decrypt-threw {:message (.getMessage t)})))))
 
-(defrecord CaesiumCrypto [aead-fns]
+(defn- hkdf-derive
+  [{:crypto/keys [ikm salt info length]}]
+  (cond
+    (not (byte-array? ikm))
+    (r/err :crypto/bad-input {:reason :ikm-not-byte-array})
+
+    (and (some? salt) (not (byte-array? salt)))
+    (r/err :crypto/bad-input {:reason :salt-not-byte-array})
+
+    (and (some? info) (not (byte-array? info)))
+    (r/err :crypto/bad-input {:reason :info-not-byte-array})
+
+    (or (not (integer? length)) (not (pos? length)))
+    (r/err :crypto/bad-input {:reason :length-must-be-positive-integer
+                              :length length})
+
+    (> length kdf/MAX_LENGTH)
+    (r/err :crypto/bad-input {:reason :length-exceeds-hkdf-max
+                              :length length :max kdf/MAX_LENGTH})
+
+    :else
+    (try
+      (r/ok {:crypto/key (kdf/hkdf-sha256 salt ikm info (long length))
+             :crypto/algorithm :hkdf-sha256})
+      (catch Throwable t
+        (r/err :crypto/derive-key-threw {:message (.getMessage t)})))))
+
+(defn- argon2id-hash
+  [pwhash-fns {:crypto/keys [password salt ops-limit mem-limit length]}]
+  (let [{:keys [pwhash alg-argon2id13 salt-bytes]} pwhash-fns]
+    (cond
+      (not (byte-array? password))
+      (r/err :crypto/bad-input {:reason :password-not-byte-array})
+
+      (not (byte-array? salt))
+      (r/err :crypto/bad-input {:reason :salt-not-byte-array})
+
+      (not= salt-bytes (alength ^bytes salt))
+      (r/err :crypto/bad-salt-size {:expected salt-bytes
+                                    :actual (alength ^bytes salt)})
+
+      (or (not (integer? ops-limit)) (not (pos? ops-limit)))
+      (r/err :crypto/bad-input {:reason :ops-limit-must-be-positive-integer})
+
+      (or (not (integer? mem-limit)) (not (pos? mem-limit)))
+      (r/err :crypto/bad-input {:reason :mem-limit-must-be-positive-integer})
+
+      (or (not (integer? length)) (not (pos? length)))
+      (r/err :crypto/bad-input {:reason :length-must-be-positive-integer})
+
+      :else
+      (try
+        (let [^bytes h (pwhash (long length) password salt
+                               (long ops-limit) (long mem-limit) alg-argon2id13)]
+          (r/ok {:crypto/hash h :crypto/algorithm :argon2id}))
+        (catch Throwable t
+          (r/err :crypto/password-hash-threw {:message (.getMessage t)}))))))
+
+(defrecord CaesiumCrypto [aead-fns pwhash-fns]
   proto/ICrypto
   (crypto-hash [_ {:crypto/keys [algorithm]}]
     (r/err :crypto/unsupported {:algorithm algorithm :op :hash
@@ -77,10 +149,20 @@
   (crypto-decrypt! [_ {:crypto/keys [algorithm] :as op}]
     (case algorithm
       :xchacha20-poly1305 (xchacha-decrypt aead-fns op)
-      (r/err :crypto/unsupported {:algorithm algorithm :op :decrypt}))))
+      (r/err :crypto/unsupported {:algorithm algorithm :op :decrypt})))
+  (crypto-derive-key [_ {:crypto/keys [algorithm] :as op}]
+    (case algorithm
+      :hkdf-sha256 (hkdf-derive op)
+      (r/err :crypto/unsupported {:algorithm algorithm :op :derive-key})))
+  (crypto-password-hash [_ {:crypto/keys [algorithm] :as op}]
+    (case algorithm
+      :argon2id (argon2id-hash pwhash-fns op)
+      (r/err :crypto/unsupported {:algorithm algorithm :op :password-hash}))))
 
 (defn ->caesium-crypto
   "Construct a caesium-backed ICrypto. Throws if caesium / libsodium not
-   available on the classpath / native lib path."
+   available on the classpath / native lib path. Resolves both AEAD and
+   pwhash (Argon2id) primitives at construction; HKDF is pure-Java and
+   needs no native binding."
   []
-  (->CaesiumCrypto (resolve-aead!)))
+  (->CaesiumCrypto (resolve-aead!) (resolve-pwhash!)))

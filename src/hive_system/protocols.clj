@@ -95,6 +95,24 @@
   (shell-which [this program]
     "Resolve program path. Returns Result with {:path} or err."))
 
+
+(defprotocol IHostOSRelease
+  "Read host operating-system release identity.
+
+   Primitive host capability contract. Endpoint-specific execution and policy
+   live in higher-level general projects that implement this protocol."
+  (host-os-release [this opts]
+    "Return Result<{:id :version-id :pretty-name :raw}> from /etc/os-release or equivalent."))
+
+
+(defprotocol IHostExecutableLookup
+  "Resolve executable availability on a host.
+
+   Primitive host capability contract. Batch discovery and package-manager
+   interpretation compose above this protocol."
+  (host-executable [this program opts]
+    "Return Result<{:program :present? :path?}> for one executable."))
+
 (defprotocol ICrypto
   "Cryptographic operations.
 
@@ -102,7 +120,8 @@
    the `:crypto/*` namespace. Returns hive-dsl Result.
 
    Common keys:
-     :crypto/algorithm   keyword       — :xchacha20-poly1305, :hpke-x25519, :sha256, ...
+     :crypto/algorithm   keyword       — :xchacha20-poly1305, :hpke-x25519, :sha256,
+                                         :hkdf-sha256, :argon2id, ...
      :crypto/key         ^bytes        — symmetric key (32B AEAD) or signing key
      :crypto/pubkey      ^bytes        — recipient public key (HPKE seal)
      :crypto/keypair     {:public :private} — HPKE open
@@ -112,13 +131,22 @@
      :crypto/aad         ^bytes        — additional authenticated data / contextInfo
      :crypto/data        ^bytes        — hash / sign / verify input
      :crypto/signature   ^bytes        — verify input
+     :crypto/ikm         ^bytes        — input keying material (KDF)
+     :crypto/salt        ^bytes-or-nil — KDF salt / pwhash salt (16B for Argon2id)
+     :crypto/info        ^bytes-or-nil — HKDF context/info string (RFC 5869)
+     :crypto/length      pos-int       — desired output bytes (KDF / pwhash)
+     :crypto/password    ^bytes        — password to hash (pwhash)
+     :crypto/ops-limit   pos-int       — pwhash CPU cost (libsodium t_cost)
+     :crypto/mem-limit   pos-int       — pwhash memory cost in bytes (libsodium memlimit)
 
    Result shapes (also `:crypto/*` namespaced):
-     encrypt → {:ok {:crypto/ciphertext ... :crypto/iv ...}}
-     decrypt → {:ok {:crypto/plaintext ...}}
-     hash    → {:ok {:crypto/hash ... :crypto/algorithm ...}}
-     sign    → {:ok {:crypto/signature ...}}
-     verify  → {:ok {:crypto/valid? boolean}}"
+     encrypt      → {:ok {:crypto/ciphertext ... :crypto/iv ...}}
+     decrypt      → {:ok {:crypto/plaintext ...}}
+     hash         → {:ok {:crypto/hash ... :crypto/algorithm ...}}
+     sign         → {:ok {:crypto/signature ...}}
+     verify       → {:ok {:crypto/valid? boolean}}
+     derive-key   → {:ok {:crypto/key ^bytes :crypto/algorithm ...}}
+     password-hash → {:ok {:crypto/hash ^bytes :crypto/algorithm ...}}"
   (crypto-hash [this op-map]
     "Hash :crypto/data with :crypto/algorithm.")
   (crypto-sign! [this op-map]
@@ -128,4 +156,12 @@
   (crypto-encrypt! [this op-map]
     "Encrypt :crypto/plaintext under :crypto/key (or :crypto/pubkey for HPKE).")
   (crypto-decrypt! [this op-map]
-    "Decrypt :crypto/ciphertext under :crypto/key (or :crypto/keypair for HPKE)."))
+    "Decrypt :crypto/ciphertext under :crypto/key (or :crypto/keypair for HPKE).")
+  (crypto-derive-key [this op-map]
+    "Derive a key from :crypto/ikm with :crypto/algorithm (e.g. :hkdf-sha256).
+     Inputs: :crypto/ikm :crypto/salt :crypto/info :crypto/length.
+     Returns Result<{:crypto/key ^bytes :crypto/algorithm ...}>.")
+  (crypto-password-hash [this op-map]
+    "Password-hash :crypto/password with :crypto/algorithm (e.g. :argon2id).
+     Inputs: :crypto/password :crypto/salt :crypto/ops-limit :crypto/mem-limit
+     :crypto/length. Returns Result<{:crypto/hash ^bytes :crypto/algorithm ...}>."))

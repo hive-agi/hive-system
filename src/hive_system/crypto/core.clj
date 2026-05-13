@@ -121,3 +121,29 @@
   (proto/crypto-verify
    adapter
    (merge {:crypto/algorithm :ed25519} (dissoc op :crypto/adapter))))
+
+(defn kdf-hkdf-sha256
+  "HKDF-SHA256 key derivation (RFC 5869). See ns docstring for op-map shape.
+
+   Required: :crypto/adapter :crypto/ikm :crypto/length.
+   Optional: :crypto/salt :crypto/info (each ^bytes-or-nil).
+
+   Returns Result<{:crypto/key ^bytes :crypto/algorithm :hkdf-sha256}>."
+  [{:crypto/keys [adapter] :as op}]
+  (proto/crypto-derive-key
+   adapter
+   (merge {:crypto/algorithm :hkdf-sha256} (dissoc op :crypto/adapter))))
+
+(defn pwhash-argon2id
+  "Argon2id v1.3 password-hash. See ns docstring for op-map shape.
+
+   Required: :crypto/adapter :crypto/password :crypto/salt
+             :crypto/ops-limit :crypto/mem-limit :crypto/length.
+
+   Returns Result<{:crypto/hash ^bytes :crypto/algorithm :argon2id}>.
+   May return {:error :crypto/unsupported ...} on adapters without
+   native Argon2id (e.g. Tink) — callers must handle that explicitly."
+  [{:crypto/keys [adapter] :as op}]
+  (proto/crypto-password-hash
+   adapter
+   (merge {:crypto/algorithm :argon2id} (dissoc op :crypto/adapter))))

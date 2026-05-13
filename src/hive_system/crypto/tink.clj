@@ -10,7 +10,8 @@
                             (DHKEM-X25519 + HKDF-SHA256 + ChaCha20-Poly1305)
      :sha256              — message digest"
   (:require [hive-dsl.result :as r]
-            [hive-system.protocols :as proto])
+            [hive-system.protocols :as proto]
+            [hive-system.crypto.kdf :as kdf])
   (:import (com.google.crypto.tink HybridDecrypt HybridEncrypt InsecureSecretKeyAccess
                                    KeysetHandle PublicKeySign PublicKeyVerify)
            (com.google.crypto.tink.hybrid HpkeParameters HpkeParameters$AeadId
@@ -239,6 +240,33 @@
      (catch Throwable t
        (r/err :crypto/verify-threw {:message (.getMessage t)})))))
 
+(defn- hkdf-derive
+  [{:crypto/keys [ikm salt info length]}]
+  (cond
+    (not (byte-array? ikm))
+    (r/err :crypto/bad-input {:reason :ikm-not-byte-array})
+
+    (and (some? salt) (not (byte-array? salt)))
+    (r/err :crypto/bad-input {:reason :salt-not-byte-array})
+
+    (and (some? info) (not (byte-array? info)))
+    (r/err :crypto/bad-input {:reason :info-not-byte-array})
+
+    (or (not (integer? length)) (not (pos? length)))
+    (r/err :crypto/bad-input {:reason :length-must-be-positive-integer
+                              :length length})
+
+    (> length kdf/MAX_LENGTH)
+    (r/err :crypto/bad-input {:reason :length-exceeds-hkdf-max
+                              :length length :max kdf/MAX_LENGTH})
+
+    :else
+    (try
+      (r/ok {:crypto/key (kdf/hkdf-sha256 salt ikm info (long length))
+             :crypto/algorithm :hkdf-sha256})
+      (catch Throwable t
+        (r/err :crypto/derive-key-threw {:message (.getMessage t)})))))
+
 (defn generate-ed25519-keypair
   "Generate a fresh Ed25519 keypair. Returns {:public 32-bytes :private 32-bytes}."
   []
@@ -276,7 +304,15 @@
     (case algorithm
       :xchacha20-poly1305 (xchacha-decrypt op)
       :hpke-x25519        (hpke-decrypt op)
-      (r/err :crypto/unsupported {:algorithm algorithm :op :decrypt}))))
+      (r/err :crypto/unsupported {:algorithm algorithm :op :decrypt})))
+  (crypto-derive-key [_ {:crypto/keys [algorithm] :as op}]
+    (case algorithm
+      :hkdf-sha256 (hkdf-derive op)
+      (r/err :crypto/unsupported {:algorithm algorithm :op :derive-key})))
+  (crypto-password-hash [_ {:crypto/keys [algorithm]}]
+    (r/err :crypto/unsupported
+           {:algorithm algorithm :op :password-hash
+            :note "Tink does not ship Argon2id; use CaesiumCrypto"})))
 
 (defn ->tink-crypto
   "Construct a Tink-backed ICrypto."

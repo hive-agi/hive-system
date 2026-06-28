@@ -33,7 +33,7 @@
    - otherwise → returned unchanged."
   ^String [^String arg]
   (cond
-    (.isEmpty arg)              "''"
+    (= "" arg)                  "''"
     (re-find needs-quoting arg) (str \' (str/replace arg "'" "'\\''") \')
     :else                       arg))
 

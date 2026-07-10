@@ -15,7 +15,7 @@
         babashka/fs {:mvn/version "0.5.32"}
 
         ;; Datahike — Clojure-native Datalog database (temporal storage)
-        org.replikativ/datahike {:mvn/version "0.8.1671"}
+        org.replikativ/datahike {:mvn/version "0.8.1719"}
 
         ;; Logging
         com.taoensso/timbre {:mvn/version "6.8.0"}

@@ -1,0 +1,1 @@
+{:ok {:exit-code 0, :stdout "deterministic\n", :stderr ""}}

@@ -7,7 +7,7 @@
   (:import (javax.crypto Mac)
            (javax.crypto.spec SecretKeySpec)))
 
-(def ^:const HASH_LEN 32)
+(def ^:private ^:const HASH_LEN 32)
 (def ^:const MAX_LENGTH (* 255 HASH_LEN))
 
 (defn- hmac-sha256 ^bytes [^bytes k ^bytes m]
@@ -15,7 +15,7 @@
     (.init mac (SecretKeySpec. k "HmacSHA256"))
     (.doFinal mac m)))
 
-(defn hkdf-extract
+(defn- hkdf-extract
   "RFC 5869 §2.2 — PRK = HMAC-SHA256(salt, IKM).
    nil or zero-length salt ⇒ HashLen zero bytes (RFC 5869 default).
    HMAC-SHA256 rejects empty keys outright, so we substitute the default."
@@ -26,7 +26,7 @@
         ikm  (or ikm (byte-array 0))]
     (hmac-sha256 salt ikm)))
 
-(defn hkdf-expand
+(defn- hkdf-expand
   "RFC 5869 §2.3 — OKM expansion. length ≤ 255 * HashLen."
   ^bytes [^bytes prk info ^long length]
   (when (> length MAX_LENGTH)

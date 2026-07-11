@@ -46,6 +46,16 @@
   (process-pipe! [this from-process to-process]
     "Pipe stdout of one process to stdin of another. Returns Result."))
 
+(defprotocol IWorker
+  "Warm request/response worker over a long-lived process (IProcess).
+   All operations return Result."
+  (worker-call! [this request timeout-ms]
+    "Send a framed request, read one framed response. Returns Result.")
+  (worker-health [this]
+    "Worker process liveness. Returns Result.")
+  (worker-stop! [this]
+    "Stop the worker and release its process. Returns Result."))
+
 (defprotocol INetwork
   "Network operations. All operations return Result."
   (net-connect! [this host port opts]

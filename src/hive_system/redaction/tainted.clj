@@ -52,7 +52,8 @@
    - Cross-process correlation. By design — see Hash semantics above."
   (:import [java.security SecureRandom]
            [javax.crypto Mac]
-           [javax.crypto.spec SecretKeySpec]))
+           [javax.crypto.spec SecretKeySpec])
+  (:require [hive-dsl.result :refer [rescue]]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -123,7 +124,9 @@
 ;; pprint dispatch — register lazily so we don't pull in clojure.pprint
 ;; for callers that never use it.
 (defn- install-pprint-dispatch! []
-  (when (try (require 'clojure.pprint) true (catch Exception _ nil))
+  (when (rescue nil
+          (require 'clojure.pprint)
+          true)
     (let [simple-dispatch (resolve 'clojure.pprint/simple-dispatch)
           use-method      (resolve 'clojure.pprint/use-method)]
       (when (and simple-dispatch use-method)

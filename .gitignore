@@ -8,3 +8,4 @@ target/
 local.deps.edn
 .clj-kondo/imports/
 .clj-kondo/
+*.elc

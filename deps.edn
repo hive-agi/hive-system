@@ -3,13 +3,13 @@
         org.clojure/core.async {:mvn/version "1.7.701"}
 
         ;; Result ADT + DSL macros (railway-oriented programming)
-        io.github.hive-agi/hive-dsl {:git/tag "v0.5.2" :git/sha "8d9760c"}
+        io.github.hive-agi/hive-dsl {:mvn/version "0.5.2"}
 
         ;; Event system (interceptors, effects/coeffects, FSM)
-        io.github.hive-agi/hive-events {:git/tag "v0.5.2" :git/sha "24a58a1"}
+        io.github.hive-agi/hive-events {:mvn/version "0.5.2"}
 
         ;; Bounded parallel execution (pmap, fork-join, gate)
-        io.github.hive-agi/hive-weave {:git/tag "v0.2.5" :git/sha "5895a2a958964a744a43a356e990b8fc4b9e368e"}
+        io.github.hive-agi/hive-weave {:mvn/version "0.2.5"}
 
         ;; Filesystem utilities (which, glob, exists?, list-dir, etc.)
         babashka/fs {:mvn/version "0.5.32"}
@@ -30,7 +30,11 @@
         caesium/caesium {:mvn/version "0.15.0"}}
 
  :aliases
- {:dev {:extra-paths ["dev" "test"]
+ {:build {:deps {io.github.clojure/tools.build {:mvn/version "0.10.9"}
+                 slipset/deps-deploy {:mvn/version "0.2.2"}}
+          :ns-default build}
+
+  :dev {:extra-paths ["dev" "test"]
         :extra-deps {org.clojure/test.check {:mvn/version "1.1.1"}}}
 
   :test {:extra-paths ["test"]

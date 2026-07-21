@@ -42,5 +42,5 @@
                       io.github.cognitect-labs/test-runner
                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}
                       io.github.hive-agi/hive-test
-                      {:git/tag "v0.3.0" :git/sha "763e4bc"}}
+                      {:mvn/version "0.3.6"}}
          :main-opts ["-m" "cognitect.test-runner"]}}}

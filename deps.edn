@@ -1,9 +1,9 @@
-{:paths ["src"]
+{:paths ["src" "resources"]
  :deps {org.clojure/clojure {:mvn/version "1.12.1"}
         org.clojure/core.async {:mvn/version "1.7.701"}
 
         ;; Result ADT + DSL macros (railway-oriented programming)
-        io.github.hive-agi/hive-dsl {:mvn/version "0.5.2"}
+        io.github.hive-agi/hive-dsl {:mvn/version "0.5.4"}
 
         ;; Event system (interceptors, effects/coeffects, FSM)
         io.github.hive-agi/hive-events {:mvn/version "0.5.2"}
@@ -42,5 +42,5 @@
                       io.github.cognitect-labs/test-runner
                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}
                       io.github.hive-agi/hive-test
-                      {:mvn/version "0.3.6"}}
+                      {:mvn/version "0.3.8"}}
          :main-opts ["-m" "cognitect.test-runner"]}}}

@@ -3,13 +3,13 @@
         org.clojure/core.async {:mvn/version "1.7.701"}
 
         ;; Result ADT + DSL macros (railway-oriented programming)
-        io.github.hive-agi/hive-dsl {:mvn/version "0.5.4"}
+        io.github.hive-agi/hive-dsl {:mvn/version "0.5.5"}
 
         ;; Event system (interceptors, effects/coeffects, FSM)
-        io.github.hive-agi/hive-events {:mvn/version "0.5.2"}
+        io.github.hive-agi/hive-events {:mvn/version "0.5.4"}
 
         ;; Bounded parallel execution (pmap, fork-join, gate)
-        io.github.hive-agi/hive-weave {:mvn/version "0.2.5"}
+        io.github.hive-agi/hive-weave {:mvn/version "0.2.7"}
 
         ;; Filesystem utilities (which, glob, exists?, list-dir, etc.)
         babashka/fs {:mvn/version "0.5.32"}

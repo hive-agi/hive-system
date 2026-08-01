@@ -3,7 +3,7 @@
         org.clojure/core.async {:mvn/version "1.7.701"}
 
         ;; Result ADT + DSL macros (railway-oriented programming)
-        io.github.hive-agi/hive-dsl {:mvn/version "0.5.7"}
+        io.github.hive-agi/hive-dsl {:mvn/version "0.5.8"}
 
         ;; Event system (interceptors, effects/coeffects, FSM)
         io.github.hive-agi/hive-events {:mvn/version "0.5.6"}

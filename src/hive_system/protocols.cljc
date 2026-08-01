@@ -68,7 +68,8 @@
     "Receive data. Returns Result with {:data :bytes-read}."))
 
 (defprotocol IFilesystem
-  "Advanced filesystem operations beyond basic read/write."
+  "Advanced filesystem operations beyond basic read/write.
+   Mutation side of the filesystem seam; IPathQuery owns the read-only queries."
   (fs-watch! [this path patterns handler]
     "Watch path for changes. Returns Result with {:watcher}.")
   (fs-atomic-write! [this path content opts]
@@ -76,7 +77,9 @@
   (fs-lock! [this path timeout-ms]
     "Advisory file lock. Returns Result with {:lock}.")
   (fs-tmpdir! [this prefix]
-    "Create temporary directory. Returns Result with {:path}."))
+    "Create temporary directory. Returns Result with {:path}.")
+  (fs-mkdirs! [this path]
+    "Create `path` and any missing parents; idempotent. Returns Result with {:path}."))
 
 (defprotocol IPathQuery
   "Path predicates and resolution. Pure queries — no mutation.

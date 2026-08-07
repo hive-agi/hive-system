@@ -159,3 +159,42 @@
               (sh/exec-ok! (str "exit " exit-code)))
             (gen/choose 0 2))
   {:num-tests 20})
+
+;; =============================================================================
+;; Unit: a command that leaves something running must still return
+;; =============================================================================
+
+(deftest exec-does-not-wait-for-a-backgrounded-grandchild
+  (testing "EOF on the pipe is not the command's exit, so the read is bounded"
+    (let [t0 (System/currentTimeMillis)
+          result (sh/exec! "sleep 30 & echo started" {:timeout-ms 5000})
+          elapsed (- (System/currentTimeMillis) t0)]
+      (is (r/ok? result))
+      (is (zero? (get-in result [:ok :exit])))
+      (is (< elapsed 4000)
+          "returned on the flush grace, not on the grandchild")
+      (is (true? (get-in result [:ok :detached]))
+          "and the caller is told the output was cut short"))))
+
+(deftest exec-keeps-output-written-before-the-background-child-forked
+  (testing "what the command itself printed survives the grace"
+    (let [result (sh/exec! "echo first; sleep 30 & echo second" {:timeout-ms 5000})
+          out (get-in result [:ok :stdout])]
+      (is (r/ok? result))
+      ;; The drain is abandoned mid-stream, so nothing is guaranteed to have
+      ;; been flushed — but whatever IS returned must be a prefix of the truth.
+      (is (or (= "" out) (clojure.string/starts-with? out "first"))))))
+
+(deftest exec-timeout-kills-the-whole-tree
+  (testing "a grandchild does not outlive the timeout that killed its parent"
+    ;; Asked of the filesystem, not of the process table: `pgrep -f` also
+    ;; matches whatever shell happens to carry the marker in ITS command
+    ;; line, which makes such a test pass or fail on who invoked it.
+    (let [witness (java.io.File/createTempFile "hive-system-tree-" ".witness")
+          path (.getAbsolutePath witness)]
+      (.delete witness)
+      (sh/exec! (str "(sleep 2; touch " path ") & sleep 30") {:timeout-ms 500})
+      (Thread/sleep 3000)
+      (is (not (.exists (java.io.File. path)))
+          "the backgrounded grandchild was reaped with its parent")
+      (.delete (java.io.File. path)))))

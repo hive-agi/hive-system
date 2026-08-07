@@ -6,7 +6,7 @@
             [hive-system.shell.tools :as tools]
             [hive-dsl.result :as r :refer [try-effect*]]
             [taoensso.timbre :as log])
-  (:import [java.lang ProcessBuilder ProcessBuilder$Redirect]
+  (:import [java.lang ProcessBuilder ProcessBuilder$Redirect ProcessHandle]
            [java.io BufferedReader InputStreamReader]
            [java.util.concurrent TimeUnit]))
 
@@ -17,6 +17,23 @@
 (defn- read-stream [^java.io.InputStream is]
   (with-open [rdr (BufferedReader. (InputStreamReader. is))]
     (slurp rdr)))
+
+(def ^:private flush-grace-ms
+  "How long a stream drain is given once the command itself has exited."
+  1000)
+
+(defn- drain
+  "Read `is` into a promise on a daemon thread. Returns the promise.
+
+  EOF on a process stream arrives when the last holder of the write end
+  closes it, which is not when the command exits — a backgrounded child
+  keeps it open. The read therefore has to be abandonable."
+  [^java.io.InputStream is]
+  (let [p (promise)]
+    (doto (Thread. (fn [] (deliver p (try (read-stream is) (catch Exception _ "")))))
+      (.setDaemon true)
+      (.start))
+    p))
 
 (defn- build-process
   "Construct a ProcessBuilder from command and opts."
@@ -33,6 +50,16 @@
       (.redirectErrorStream pb true))
     pb))
 
+(defn- destroy-tree!
+  "Kill `proc` and every process it spawned.
+
+  Killing only the direct child leaves grandchildren holding the pipes and
+  whatever resource the timeout was meant to reclaim."
+  [^Process proc]
+  (doseq [^ProcessHandle d (-> proc .toHandle .descendants .toList)]
+    (.destroyForcibly d))
+  (.destroyForcibly proc))
+
 (defrecord Shell [default-opts]
   proto/IShell
   (shell-exec! [_ cmd opts]
@@ -42,18 +69,22 @@
       (try-effect* :shell/exec-failed
         (let [pb (build-process cmd opts)
               proc (.start pb)
-              stdout-future (future (read-stream (.getInputStream proc)))
-              stderr-future (future (read-stream (.getErrorStream proc)))
+              stdout-p (drain (.getInputStream proc))
+              stderr-p (drain (.getErrorStream proc))
               finished? (.waitFor proc timeout-ms TimeUnit/MILLISECONDS)
               duration-ms (/ (- (System/nanoTime) start) 1e6)]
           (if finished?
-            {:exit (.exitValue proc)
-             :stdout @stdout-future
-             :stderr @stderr-future
-             :duration-ms duration-ms
-             :cmd cmd}
+            (let [out (deref stdout-p flush-grace-ms ::open)
+                  err (deref stderr-p flush-grace-ms ::open)
+                  detached? (or (= ::open out) (= ::open err))]
+              (cond-> {:exit (.exitValue proc)
+                       :stdout (if (= ::open out) "" out)
+                       :stderr (if (= ::open err) "" err)
+                       :duration-ms duration-ms
+                       :cmd cmd}
+                detached? (assoc :detached true)))
             (do
-              (.destroyForcibly proc)
+              (destroy-tree! proc)
               (r/err :shell/timeout
                      {:cmd cmd
                       :timeout-ms timeout-ms

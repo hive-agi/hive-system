@@ -36,8 +36,13 @@
     p))
 
 (defn- build-process
-  "Construct a ProcessBuilder from command and opts."
-  ^ProcessBuilder [cmd {:keys [dir env inherit-io? redirect-err?]}]
+  "Construct a ProcessBuilder from command and opts.
+
+  stdin redirects from /dev/null by default: exec! never writes to a child's
+  stdin, and an inherited open pipe makes stdin-sniffing CLIs (nuclei reads
+  targets from a piped stdin) block forever. :inherit-io? keeps the
+  terminal's stdin instead; :stdin <File/path> overrides explicitly."
+  ^ProcessBuilder [cmd {:keys [dir env inherit-io? redirect-err? stdin]}]
   (let [cmd-vec (if (string? cmd) ["sh" "-c" cmd] (vec cmd))
         pb (ProcessBuilder. ^java.util.List cmd-vec)]
     (when dir (.directory pb (java.io.File. (str dir))))
@@ -45,7 +50,10 @@
       (let [penv (.environment pb)]
         (doseq [[k v] env]
           (.put penv (str k) (str v)))))
-    (when inherit-io? (.inheritIO pb))
+    (if inherit-io?
+      (.inheritIO pb)
+      (.redirectInput pb (ProcessBuilder$Redirect/from
+                          (java.io.File. (str (or stdin "/dev/null"))))))
     (when redirect-err?
       (.redirectErrorStream pb true))
     pb))

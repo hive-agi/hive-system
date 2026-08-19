@@ -136,6 +136,10 @@
      :crypto/algorithm   keyword       — :xchacha20-poly1305, :hpke-x25519, :sha256,
                                          :hkdf-sha256, :argon2id, ...
      :crypto/key         ^bytes        — symmetric key (32B AEAD) or signing key
+     :crypto/key-encoding keyword      — how Ed25519 key material is encoded:
+                                         :raw (default, 32 bytes) or :der —
+                                         PKCS#8 private / X.509 public, read by
+                                         KeyFactory. Both wrap the same bytes.
      :crypto/pubkey      ^bytes        — recipient public key (HPKE seal)
      :crypto/keypair     {:public :private} — HPKE open
      :crypto/plaintext   ^bytes

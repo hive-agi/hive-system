@@ -8,9 +8,16 @@
      :xchacha20-poly1305  — symmetric AEAD (subtle.XChaCha20Poly1305)
      :hpke-x25519         — RFC 9180 single-shot HPKE
                             (DHKEM-X25519 + HKDF-SHA256 + ChaCha20-Poly1305)
-     :sha256              — message digest"
+     :sha256              — message digest
+
+   Ed25519 keys default to RAW 32-byte material. Pass
+   `:crypto/key-encoding :der` to work in the JDK encodings instead — PKCS#8
+   private under `:crypto/key`, X.509 public under `:crypto/pubkey` — which is
+   what a keyring stores. Both encodings wrap the same 32 bytes and produce
+   byte-identical signatures. See `hive-system.crypto.ed25519-der`."
   (:require [hive-dsl.result :as r]
             [hive-system.protocols :as proto]
+            [hive-system.crypto.ed25519-der :as der]
             [hive-system.crypto.kdf :as kdf])
   (:import (com.google.crypto.tink HybridDecrypt HybridEncrypt InsecureSecretKeyAccess
                                    KeysetHandle PublicKeySign PublicKeyVerify)
@@ -287,13 +294,13 @@
     (case algorithm
       :sha256 (sha256 op)
       (r/err :crypto/unsupported {:algorithm algorithm :op :hash})))
-  (crypto-sign! [_ {:crypto/keys [algorithm] :as op}]
+  (crypto-sign! [_ {:crypto/keys [algorithm key-encoding] :as op}]
     (case algorithm
-      :ed25519 (ed25519-sign op)
+      :ed25519 (if (= :der key-encoding) (der/sign op) (ed25519-sign op))
       (r/err :crypto/unsupported {:algorithm algorithm :op :sign})))
-  (crypto-verify [_ {:crypto/keys [algorithm] :as op}]
+  (crypto-verify [_ {:crypto/keys [algorithm key-encoding] :as op}]
     (case algorithm
-      :ed25519 (ed25519-verify op)
+      :ed25519 (if (= :der key-encoding) (der/verify op) (ed25519-verify op))
       (r/err :crypto/unsupported {:algorithm algorithm :op :verify})))
   (crypto-encrypt! [_ {:crypto/keys [algorithm] :as op}]
     (case algorithm

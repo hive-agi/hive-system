@@ -3,19 +3,23 @@
         org.clojure/core.async {:mvn/version "1.7.701"}
 
         ;; Result ADT + DSL macros (railway-oriented programming)
-        io.github.hive-agi/hive-dsl {:mvn/version "0.5.8"}
+        io.github.hive-agi/hive-dsl {:mvn/version "0.5.10"}
 
         ;; Event system (interceptors, effects/coeffects, FSM)
         io.github.hive-agi/hive-events {:mvn/version "0.5.6"}
 
+        ;; Ports this system implements — ISigner, so a licence can be signed
+        ;; through whichever ICrypto a host has already built.
+        io.github.hive-agi/hive-spi {:mvn/version "0.1.19"}
+
         ;; Bounded parallel execution (pmap, fork-join, gate)
-        io.github.hive-agi/hive-weave {:mvn/version "0.2.9"}
+        io.github.hive-agi/hive-weave {:mvn/version "0.3.1"}
 
         ;; Filesystem utilities (which, glob, exists?, list-dir, etc.)
         babashka/fs {:mvn/version "0.5.32"}
 
         ;; Datahike — Clojure-native Datalog database (temporal storage)
-        org.replikativ/datahike {:mvn/version "0.8.1719"}
+        org.replikativ/datahike {:mvn/version "0.8.1784"}
 
         ;; Logging
         com.taoensso/timbre {:mvn/version "6.8.0"}
@@ -41,5 +45,5 @@
                       io.github.cognitect-labs/test-runner
                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}
                       io.github.hive-agi/hive-test
-                      {:mvn/version "0.3.10"}}
+                      {:mvn/version "0.3.12"}}
          :main-opts ["-m" "cognitect.test-runner"]}}}

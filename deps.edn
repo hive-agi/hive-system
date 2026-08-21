@@ -1,6 +1,6 @@
 {:paths ["src" "resources"]
  :deps {org.clojure/clojure {:mvn/version "1.12.5"}
-        org.clojure/core.async {:mvn/version "1.7.701"}
+        org.clojure/core.async {:mvn/version "1.9.865"}
 
         ;; Result ADT + DSL macros (railway-oriented programming)
         io.github.hive-agi/hive-dsl {:mvn/version "0.5.14"}

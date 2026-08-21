@@ -78,12 +78,28 @@
       (is (= "hello-hive\n" (get-in result [:ok :stdout]))))))
 
 (deftest exec-with-timeout
-  (testing "exec! returns :shell/timeout on deadline exceeded"
+  (testing "a timeout is a FLAT err, never an ok wrapping an err"
     (let [result (sh/exec! "sleep 10" {:timeout-ms 100})]
-      ;; The try-effect wraps the timeout err into an ok of err, need to check
-      (is (or (r/err? result)
-              (and (r/ok? result)
-                   (= :shell/timeout (:error (:ok result)))))))))
+      (is (r/err? result)
+          "a caller branching on r/err? must see the timeout")
+      (is (not (r/ok? result)))
+      (is (= :shell/timeout (:error result)))
+      (is (nil? (:ok result))
+          "the legacy ok(err) nesting hid the timeout from every r/err? caller")
+      (is (= 100 (:timeout-ms result))))))
+
+(deftest exec-timeout-returns-near-its-deadline
+  (testing "a descendant holding an inherited pipe does not extend the deadline"
+    ;; The grandchild keeps the write end of the pipe open long after the
+    ;; parent is killed, so an unbounded drain used to stretch a short timeout
+    ;; into seconds. The drain is abandonable, so the deadline is the deadline.
+    (let [start      (System/nanoTime)
+          result     (sh/exec! "(sleep 30) & sleep 30" {:timeout-ms 300})
+          elapsed-ms (/ (- (System/nanoTime) start) 1e6)]
+      (is (r/err? result))
+      (is (= :shell/timeout (:error result)))
+      (is (< elapsed-ms 3000.0)
+          (str "a 300ms timeout took " (long elapsed-ms) "ms to return")))))
 
 ;; =============================================================================
 ;; Unit: exec! with vector command (no shell interpretation)

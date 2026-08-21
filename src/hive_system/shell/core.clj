@@ -71,31 +71,45 @@
 (defrecord Shell [default-opts]
   proto/IShell
   (shell-exec! [_ cmd opts]
-    (let [opts (merge default-opts opts)
+    ;; A timeout is a LAWFUL outcome, not a thrown fault, so it is produced
+    ;; OUTSIDE try-effect* — which wraps whatever its body returns in `ok`.
+    ;; A timeout err returned from inside became {:ok {:error :shell/timeout}},
+    ;; and every caller branching on r/err? read that as success.
+    (let [opts       (merge default-opts opts)
           timeout-ms (or (:timeout-ms opts) 30000)
-          start (System/nanoTime)]
-      (try-effect* :shell/exec-failed
-        (let [pb (build-process cmd opts)
-              proc (.start pb)
-              stdout-p (drain (.getInputStream proc))
-              stderr-p (drain (.getErrorStream proc))
-              finished? (.waitFor proc timeout-ms TimeUnit/MILLISECONDS)
-              duration-ms (/ (- (System/nanoTime) start) 1e6)]
+          start      (System/nanoTime)
+          ran        (try-effect* :shell/exec-failed
+                       (let [pb        (build-process cmd opts)
+                             proc      (.start pb)
+                             stdout-p  (drain (.getInputStream proc))
+                             stderr-p  (drain (.getErrorStream proc))
+                             finished? (.waitFor proc (long timeout-ms) TimeUnit/MILLISECONDS)]
+                         {:proc        proc
+                          :finished?   finished?
+                          :stdout-p    stdout-p
+                          :stderr-p    stderr-p
+                          :duration-ms (/ (- (System/nanoTime) start) 1e6)}))]
+      (if (r/err? ran)
+        ran
+        (let [{:keys [finished? stdout-p stderr-p duration-ms]} (:ok ran)
+              ^Process proc (:proc (:ok ran))]
           (if finished?
-            (let [out (deref stdout-p flush-grace-ms ::open)
-                  err (deref stderr-p flush-grace-ms ::open)
-                  detached? (or (= ::open out) (= ::open err))]
-              (cond-> {:exit (.exitValue proc)
-                       :stdout (if (= ::open out) "" out)
-                       :stderr (if (= ::open err) "" err)
-                       :duration-ms duration-ms
-                       :cmd cmd}
-                detached? (assoc :detached true)))
+            (try-effect* :shell/exec-failed
+              (let [out       (deref stdout-p flush-grace-ms ::open)
+                    err       (deref stderr-p flush-grace-ms ::open)
+                    detached? (or (= ::open out) (= ::open err))]
+                (cond-> {:exit        (.exitValue proc)
+                         :stdout      (if (= ::open out) "" out)
+                         :stderr      (if (= ::open err) "" err)
+                         :duration-ms duration-ms
+                         :cmd         cmd}
+                  detached? (assoc :detached true))))
             (do
-              (destroy-tree! proc)
+              ;; best-effort reap; the timeout is the answer either way
+              (try (destroy-tree! proc) (catch Exception _ nil))
               (r/err :shell/timeout
-                     {:cmd cmd
-                      :timeout-ms timeout-ms
+                     {:cmd         cmd
+                      :timeout-ms  timeout-ms
                       :duration-ms duration-ms})))))))
 
   (shell-env [_]

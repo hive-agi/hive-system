@@ -22,12 +22,18 @@
   :keyword)
 
 (def Pattern
-  "What to look for. :pattern/engine absent means the caller's default engine."
+  "What to look for. :pattern/engine absent means the caller's default engine.
+
+   :pattern/construct is present when the expression was PROJECTED from a
+   regex construct (see hive-system.pattern.construct.api) rather than written
+   as a literal. It records the source of :pattern/expr; nothing in the match
+   path reads it."
   [:map {:closed true}
    [:pattern/id {:optional true} :keyword]
    [:pattern/engine {:optional true} EngineId]
    [:pattern/expr :string]
    [:pattern/flags {:optional true} [:set Flag]]
+   [:pattern/construct {:optional true} :any]
    [:pattern/doc {:optional true} :string]])
 
 (def PatternRef

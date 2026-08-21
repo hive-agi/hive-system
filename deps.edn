@@ -32,7 +32,12 @@
 
         ;; Crypto: caesium (libsodium binding — alternative ICrypto adapter)
         caesium/caesium {:mvn/version "0.15.0"}
-        metosin/malli {:mvn/version "0.20.1"}}
+
+        ;; Value objects + contracts (malli is the single source: m/=> + tests)
+        metosin/malli {:mvn/version "0.20.1"}
+
+        ;; Regex-as-data: the construct language for hive-system.pattern.construct
+        lambdaisland/regal {:mvn/version "0.1.175"}}
 
  :aliases
  {:build {:deps {io.github.hive-agi/hive-build {:mvn/version "0.1.9"}}

@@ -24,7 +24,15 @@
   "Engine used by a Pattern that names none."
   :regex)
 
-(defonce ^:private bootstrap
+(def ^:private bootstrap
+  "Registers the regex engine on load.
+
+   `def`, not `defonce`: reloading `pattern.regex` or `pattern.protocols`
+   recompiles `RegexEngine` / `IPatternEngine`, and an instance minted before
+   the recompile no longer satisfies the protocol — `match?` then throws
+   \"No implementation of method\" against a registry holding an orphan.
+   Re-registering on every load replaces it; safe because registration is keyed
+   by engine-id and therefore idempotent."
   (registry/register-engine! (regex/make-engine)))
 
 (defn- resolved

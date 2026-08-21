@@ -118,45 +118,105 @@
     (r/ok (and abs dir))))
 
 ;; =============================================================================
+;; Shared Walk Policy
+;; =============================================================================
+
+(def ^:private default-skip-dirs
+  "Directory names never descended into by `find-files` or `cargo-scan`.
+   Heavy, generated, or irrelevant for source discovery. `data` is in the set
+   because konserve/datahike EDN stores live there and hold millions of files.
+   Override per call with the `:skip-dirs` opt."
+  #{"node_modules" "target" ".cpcache" ".git" ".shadow-cljs" ".clj-kondo"
+    ".lsp" ".nrepl" "dist" "build" "out" "__pycache__" ".venv" "venv"
+    ".gradle" ".m2" "classes" ".gitlibs" "data"})
+
+;; =============================================================================
 ;; Recursive File Discovery
 ;; =============================================================================
 
 (defn find-files
   "Recursively find files matching extensions under path.
    If path is a file matching exts, returns [path].
-   If path is a directory, walks recursively.
+   If path is a directory, walks it, pruning `:skip-dirs` and hidden entries.
    Returns Result<vec<string>>.
+
+   opts:
+     :skip-dirs — dir names never descended into (default: `default-skip-dirs`).
+                  The root is always walked, even when its own name is in the set.
+     :max-depth — cap the walk depth (default: unlimited).
+
+   The walk is interrupt-aware: on an interrupted thread it terminates and the
+   Result is (err :fs/find-failed {:class \"...InterruptedException\"}), with the
+   interrupt flag left SET so the caller still observes its own cancellation.
 
    (find-files \"/src\" #{\"clj\" \"cljs\" \"cljc\"})
    => (ok [\"/src/a.clj\" \"/src/b/c.cljs\"])"
-  [path exts]
-  (try-effect* :fs/find-failed
-    (let [ext-set (set exts)
-          match?  (fn [p] (some #(str/ends-with? (str p) (str "." %)) ext-set))]
-      (cond
-        (not (fs/exists? path))
-        []
+  ([path exts] (find-files path exts {}))
+  ([path exts {:keys [skip-dirs max-depth]}]
+   (try-effect* :fs/find-failed
+     (let [ext-set (set exts)
+           match?  (fn [p] (some #(str/ends-with? (str p) (str "." %)) ext-set))
+           hidden? (fn [p] (str/starts-with? (str (fs/file-name p)) "."))]
+       (cond
+         (not (fs/exists? path))
+         []
 
-        (fs/regular-file? path)
-        (if (match? path) [(str path)] [])
+         (fs/regular-file? path)
+         (if (match? path) [(str path)] [])
 
-        (fs/directory? path)
-        ;; Use "**." instead of "**/*." so glob also matches files at the
-        ;; root of `path`, not just in subdirectories.
-        (->> (fs/glob path (str "**.{" (str/join "," ext-set) "}"))
-             (mapv str))
+         (fs/directory? path)
+         ;; A hand-rolled walk rather than fs/glob: glob has no directory-exclude
+         ;; option, so it descends into konserve stores, and its walk cannot be
+         ;; cancelled — an orphaned thread churns on after the caller times out.
+         (let [skip     (or skip-dirs default-skip-dirs)
+               root-abs (str (fs/absolutize path))
+               acc      (volatile! [])
+               halted?  (volatile! false)]
+           (fs/walk-file-tree
+            path
+            (cond-> {:pre-visit-dir
+                     (fn [dir _attrs]
+                       (cond
+                         (.isInterrupted (Thread/currentThread))
+                         (do (vreset! halted? true) :terminate)
 
-        :else []))))
+                         ;; an explicitly-named root is walked even when skippable
+                         (= (str (fs/absolutize dir)) root-abs)
+                         :continue
+
+                         (or (hidden? dir) (contains? skip (str (fs/file-name dir))))
+                         :skip-subtree
+
+                         :else :continue))
+
+                     :visit-file
+                     (fn [file _attrs]
+                       (if (.isInterrupted (Thread/currentThread))
+                         (do (vreset! halted? true) :terminate)
+                         (do (when (and (match? file) (not (hidden? file)))
+                               (vswap! acc conj (str file)))
+                             :continue)))
+
+                     ;; an unreadable entry is skipped, never fatal
+                     :visit-file-failed (fn [_ _] :continue)}
+              max-depth (assoc :max-depth max-depth)))
+           ;; partial results would read as a complete answer — refuse instead
+           (when @halted?
+             (throw (InterruptedException. "find-files walk interrupted")))
+           @acc)
+
+         :else [])))))
 
 (defn expand-path
-  "Expand a path to matching files. Directory → recursive glob.
-   File matching exts → [file]. Nonexistent → []. Error → [].
+  "Expand a path to matching files. Directory → pruned recursive walk.
+   File matching exts → [file]. Nonexistent → []. Error (incl. interrupt) → [].
    Returns plain vec (not Result) — rescue-wrapped for pipeline use.
+   `opts` is passed through to `find-files` (:skip-dirs, :max-depth).
 
    (expand-path \"/src\" #{\"clj\" \"cljs\"})
    => [\"/src/foo.clj\" \"/src/bar/baz.cljs\"]"
-  [path exts]
-  (or (:ok (find-files path exts)) []))
+  ([path exts] (expand-path path exts {}))
+  ([path exts opts] (or (:ok (find-files path exts opts)) [])))
 
 ;; =============================================================================
 ;; Railway Combinators
@@ -183,12 +243,6 @@
 ;; =============================================================================
 ;; Cargo-Scan: Parallel Directory Scanner
 ;; =============================================================================
-
-(def ^:private default-skip-dirs
-  "Directory names to skip — heavy or irrelevant for project discovery."
-  #{"node_modules" "target" ".cpcache" ".git" ".shadow-cljs" ".clj-kondo"
-    ".lsp" ".nrepl" "dist" "build" "out" "__pycache__" ".venv" "venv"
-    ".gradle" ".m2" "classes" ".gitlibs"})
 
 (defn- scannable?
   "Check if directory should be scanned (not hidden, not in skip set)."

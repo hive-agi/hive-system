@@ -28,7 +28,7 @@
         org.clojure/data.json {:mvn/version "2.5.2"}
 
         ;; Crypto: Tink (default ICrypto adapter — pure-Java)
-        com.google.crypto.tink/tink {:mvn/version "1.18.0"}
+        com.google.crypto.tink/tink {:mvn/version "1.23.0"}
 
         ;; Crypto: caesium (libsodium binding — alternative ICrypto adapter)
         caesium/caesium {:mvn/version "0.15.0"}}

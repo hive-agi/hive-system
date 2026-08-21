@@ -1,39 +1,24 @@
 (ns hive-system.shell.core
   "IShell implementation via ProcessBuilder.
-   All operations return hive-dsl Results."
+   All operations return hive-dsl Results.
+
+   Stream draining and process-tree teardown are shared with the IProcess
+   implementation — see hive-system.process.streams / .tree. Both faced the
+   same hazard (a descendant holding an inherited pipe), and one copy of the
+   answer is the point."
   (:require [hive-system.protocols :as proto]
+            [hive-system.process.streams :as streams]
+            [hive-system.process.tree :as tree]
             [hive-system.shell.detect :as detect]
             [hive-system.shell.tools :as tools]
             [hive-dsl.result :as r :refer [try-effect*]]
             [taoensso.timbre :as log])
   (:import [java.lang ProcessBuilder ProcessBuilder$Redirect ProcessHandle]
-           [java.io BufferedReader InputStreamReader]
            [java.util.concurrent TimeUnit]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: MIT
-
-(defn- read-stream [^java.io.InputStream is]
-  (with-open [rdr (BufferedReader. (InputStreamReader. is))]
-    (slurp rdr)))
-
-(def ^:private flush-grace-ms
-  "How long a stream drain is given once the command itself has exited."
-  1000)
-
-(defn- drain
-  "Read `is` into a promise on a daemon thread. Returns the promise.
-
-  EOF on a process stream arrives when the last holder of the write end
-  closes it, which is not when the command exits — a backgrounded child
-  keeps it open. The read therefore has to be abandonable."
-  [^java.io.InputStream is]
-  (let [p (promise)]
-    (doto (Thread. (fn [] (deliver p (try (read-stream is) (catch Exception _ "")))))
-      (.setDaemon true)
-      (.start))
-    p))
 
 (defn- build-process
   "Construct a ProcessBuilder from command and opts.
@@ -58,16 +43,6 @@
       (.redirectErrorStream pb true))
     pb))
 
-(defn- destroy-tree!
-  "Kill `proc` and every process it spawned.
-
-  Killing only the direct child leaves grandchildren holding the pipes and
-  whatever resource the timeout was meant to reclaim."
-  [^Process proc]
-  (doseq [^ProcessHandle d (-> proc .toHandle .descendants .toList)]
-    (.destroyForcibly d))
-  (.destroyForcibly proc))
-
 (defrecord Shell [default-opts]
   proto/IShell
   (shell-exec! [_ cmd opts]
@@ -81,8 +56,8 @@
           ran        (try-effect* :shell/exec-failed
                        (let [pb        (build-process cmd opts)
                              proc      (.start pb)
-                             stdout-p  (drain (.getInputStream proc))
-                             stderr-p  (drain (.getErrorStream proc))
+                             stdout-p  (streams/drain (.getInputStream proc))
+                             stderr-p  (streams/drain (.getErrorStream proc))
                              finished? (.waitFor proc (long timeout-ms) TimeUnit/MILLISECONDS)]
                          {:proc        proc
                           :finished?   finished?
@@ -95,8 +70,8 @@
               ^Process proc (:proc (:ok ran))]
           (if finished?
             (try-effect* :shell/exec-failed
-              (let [out       (deref stdout-p flush-grace-ms ::open)
-                    err       (deref stderr-p flush-grace-ms ::open)
+              (let [out       (deref stdout-p streams/flush-grace-ms ::open)
+                    err       (deref stderr-p streams/flush-grace-ms ::open)
                     detached? (or (= ::open out) (= ::open err))]
                 (cond-> {:exit        (.exitValue proc)
                          :stdout      (if (= ::open out) "" out)
@@ -105,8 +80,9 @@
                          :cmd         cmd}
                   detached? (assoc :detached true))))
             (do
-              ;; best-effort reap; the timeout is the answer either way
-              (try (destroy-tree! proc) (catch Exception _ nil))
+              ;; a deadline kill forces, and takes the descendants with it;
+              ;; best-effort, since the timeout is the answer either way
+              (try (tree/destroy-tree! proc true) (catch Exception _ nil))
               (r/err :shell/timeout
                      {:cmd         cmd
                       :timeout-ms  timeout-ms

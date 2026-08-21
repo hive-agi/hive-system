@@ -1,27 +1,25 @@
 (ns hive-system.process.core
   "IProcess implementation via java.lang.ProcessBuilder / ProcessHandle.
    Long-lived process lifecycle: spawn returns a live handle; wait/signal/pipe
-   act on it. All operations return hive-dsl Result."
+   act on it. All operations return hive-dsl Result.
+
+   Stream draining and process-tree teardown are shared with the IShell
+   implementation — see hive-system.process.streams / .tree.
+
+   No hive-weave here on purpose: this namespace has to stay loadable under
+   Babashka, and hive-weave.pool is not."
   (:require [hive-system.protocols :as proto]
             [hive-system.process.liveness :as liveness]
+            [hive-system.process.streams :as streams]
+            [hive-system.process.tree :as tree]
             [hive-dsl.result :as r :refer [try-effect*]]
-            [hive-weave.pool :as pool]
-            [clojure.java.io :as io]
             [clojure.string :as str])
   (:import [java.lang ProcessBuilder Process ProcessHandle]
-           [java.io BufferedReader InputStreamReader]
            [java.util.concurrent TimeUnit]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
 ;; SPDX-License-Identifier: MIT
-
-(defn- read-stream
-  "Drain a child stream to a string; a closed stream yields \"\"."
-  [^java.io.InputStream is]
-  (r/guard java.io.IOException ""
-    (with-open [rdr (BufferedReader. (InputStreamReader. is))]
-      (slurp rdr))))
 
 (defn- build-process
   "Build a ProcessBuilder for a long-lived process (stdin open, output undrained)."
@@ -35,14 +33,6 @@
           (.put penv (str k) (str v)))))
     (when redirect-err? (.redirectErrorStream pb true))
     pb))
-
-(defn- descendant-handles [^Process process]
-  (iterator-seq (.iterator (.descendants process))))
-
-(defn- destroy-tree! [^Process process]
-  (doseq [^ProcessHandle h (descendant-handles process)]
-    (.destroy h))
-  (.destroy process))
 
 (defn- kill-signal!
   "Deliver a POSIX signal to pid via `kill -SIG`."
@@ -67,23 +57,33 @@
            :cmd     cmd}))))
 
   (process-wait! [_ handle timeout-ms]
+    ;; Same shape as IShell's exec!, and for the same reason: the drains are
+    ;; abandonable and the deadline branch is a FLAT err produced outside
+    ;; try-effect*. Deref'ing the drains unbounded let a descendant holding an
+    ;; inherited pipe stretch the wait long past timeout-ms, and killing only
+    ;; the root left that descendant alive to keep holding it.
     (let [^Process process (:process handle)
           pid (:pid handle)
-          res (try-effect* :process/wait-failed
-                (let [out-f     (future (read-stream (.getInputStream process)))
-                      err-f     (future (read-stream (.getErrorStream process)))
+          ran (try-effect* :process/wait-failed
+                (let [stdout-p  (streams/drain (.getInputStream process))
+                      stderr-p  (streams/drain (.getErrorStream process))
                       finished? (.waitFor process (long timeout-ms) TimeUnit/MILLISECONDS)]
-                  {:finished? finished?
-                   :exit      (when finished? (.exitValue process))
-                   :out-f     out-f
-                   :err-f     err-f}))]
-      (if (r/err? res)
-        res
-        (let [{:keys [finished? exit out-f err-f]} (:ok res)]
+                  {:finished? finished? :stdout-p stdout-p :stderr-p stderr-p}))]
+      (if (r/err? ran)
+        ran
+        (let [{:keys [finished? stdout-p stderr-p]} (:ok ran)]
           (if finished?
-            (r/ok {:exit-code exit :stdout @out-f :stderr @err-f})
-            (do (.destroyForcibly process)
-                (r/err :process/timeout {:pid pid :timeout-ms timeout-ms})))))))
+            (try-effect* :process/wait-failed
+              (let [out       (deref stdout-p streams/flush-grace-ms ::open)
+                    err       (deref stderr-p streams/flush-grace-ms ::open)
+                    detached? (or (= ::open out) (= ::open err))]
+                (cond-> {:exit-code (.exitValue process)
+                         :stdout    (if (= ::open out) "" out)
+                         :stderr    (if (= ::open err) "" err)}
+                  detached? (assoc :detached true))))
+            (do
+              (try (tree/destroy-tree! process true) (catch Exception _ nil))
+              (r/err :process/timeout {:pid pid :timeout-ms timeout-ms})))))))
 
   (process-signal! [_ handle signal]
     (let [^Process process (:process handle)
@@ -92,21 +92,16 @@
         (r/ok {:pid pid :signal signal :delivered? false :already-dead? true})
         (try-effect* :process/signal-failed
           (case signal
-            :term (do (.destroy process)         {:pid pid :signal :term :delivered? true})
-            :kill (do (.destroyForcibly process) {:pid pid :signal :kill :delivered? true})
-            :tree (do (destroy-tree! process)    {:pid pid :signal :tree :delivered? true})
-            (do (kill-signal! pid signal)        {:pid pid :signal signal :delivered? true}))))))
+            :term (do (.destroy process)             {:pid pid :signal :term :delivered? true})
+            :kill (do (.destroyForcibly process)     {:pid pid :signal :kill :delivered? true})
+            :tree (do (tree/destroy-tree! process)   {:pid pid :signal :tree :delivered? true})
+            (do (kill-signal! pid signal)            {:pid pid :signal signal :delivered? true}))))))
 
   (process-pipe! [_ from-handle to-handle]
     (try-effect* :process/pipe-failed
-      (let [from-out (:stdout from-handle)
-            to-in    (:stdin to-handle)
-            pump (pool/bound-future
-                   (try
-                     (io/copy from-out to-in)
-                     (finally
-                       (.close ^java.io.OutputStream to-in))))]
-        {:from-pid (:pid from-handle) :to-pid (:pid to-handle) :pump pump}))))
+      {:from-pid (:pid from-handle)
+       :to-pid   (:pid to-handle)
+       :pump     (streams/pump (:stdout from-handle) (:stdin to-handle))})))
 
 (defn make-process-manager
   "Create a ProcessManager with optional default spawn opts (:dir, :env, :redirect-err?)."

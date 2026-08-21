@@ -77,6 +77,57 @@
       (is (r/err? result))
       (is (= :process/timeout (:error result))))))
 
+(deftest wait-does-not-block-on-a-backgrounded-grandchild
+  (testing "EOF on the pipe is not the child's exit, so the drain is bounded"
+    ;; The grandchild inherits the write end of stdout and holds it open long
+    ;; after `sh` exits. Deref'ing the drain unbounded made a 5s wait take 30s.
+    (let [t0      (System/currentTimeMillis)
+          h       (:ok (proc/spawn! ["sh" "-c" "sleep 30 & echo started"]))
+          result  (proc/wait! h 5000)
+          elapsed (- (System/currentTimeMillis) t0)]
+      (is (r/ok? result))
+      (is (zero? (get-in result [:ok :exit-code])))
+      (is (< elapsed 4000)
+          "returned on the flush grace, not on the grandchild")
+      (is (true? (get-in result [:ok :detached]))
+          "and the caller is told the output was cut short")
+      (proc/signal! h :tree))))
+
+(deftest wait-does-not-mark-a-clean-exit-detached
+  (testing "a process whose tree really exits reports no truncation"
+    (let [h      (:ok (proc/spawn! ["echo" "clean"]))
+          result (proc/wait! h 5000)]
+      (is (r/ok? result))
+      (is (nil? (get-in result [:ok :detached])))
+      (is (str/includes? (get-in result [:ok :stdout]) "clean")))))
+
+(deftest wait-timeout-kills-the-whole-tree
+  (testing "a grandchild does not outlive the timeout that killed its parent"
+    ;; Asked of the filesystem, not of the process table: `pgrep -f` also
+    ;; matches whatever shell happens to carry the marker in ITS command line.
+    (let [witness (java.io.File/createTempFile "hive-system-proc-tree-" ".witness")
+          path    (.getAbsolutePath witness)]
+      (.delete witness)
+      (let [h (:ok (proc/spawn! ["sh" "-c" (str "(sleep 2; touch " path ") & sleep 30")]))]
+        (is (r/err? (proc/wait! h 500))))
+      (Thread/sleep 3000)
+      (is (not (.exists (java.io.File. path)))
+          "the backgrounded grandchild was reaped with its parent")
+      (.delete (java.io.File. path)))))
+
+(deftest wait-timeout-forces-a-child-that-ignores-term
+  (testing "the deadline has already passed, so the kill does not ask politely"
+    ;; `trap '' TERM` installs SIG_IGN, which survives the exec into sleep. A
+    ;; graceful .destroy is silently ignored by such a child and the timeout
+    ;; reclaims nothing; only .destroyForcibly ends it.
+    (let [h      (:ok (proc/spawn! ["sh" "-c" "trap '' TERM; sleep 30"]))
+          ^Process p (:process h)
+          result (proc/wait! h 500)]
+      (is (r/err? result))
+      (is (= :process/timeout (:error result)))
+      (is (.waitFor p 4000 java.util.concurrent.TimeUnit/MILLISECONDS)
+          "a TERM-ignoring child must still be gone after the deadline kill"))))
+
 ;; =============================================================================
 ;; Unit: signal!
 ;; =============================================================================

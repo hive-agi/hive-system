@@ -3,23 +3,23 @@
         org.clojure/core.async {:mvn/version "1.7.701"}
 
         ;; Result ADT + DSL macros (railway-oriented programming)
-        io.github.hive-agi/hive-dsl {:mvn/version "0.5.10"}
+        io.github.hive-agi/hive-dsl {:mvn/version "0.5.14"}
 
         ;; Event system (interceptors, effects/coeffects, FSM)
         io.github.hive-agi/hive-events {:mvn/version "0.5.6"}
 
         ;; Ports this system implements — ISigner, so a licence can be signed
         ;; through whichever ICrypto a host has already built.
-        io.github.hive-agi/hive-spi {:mvn/version "0.1.19"}
+        io.github.hive-agi/hive-spi {:mvn/version "0.1.20"}
 
         ;; Bounded parallel execution (pmap, fork-join, gate)
         io.github.hive-agi/hive-weave {:mvn/version "0.3.1"}
 
         ;; Filesystem utilities (which, glob, exists?, list-dir, etc.)
-        babashka/fs {:mvn/version "0.5.32"}
+        babashka/fs {:mvn/version "0.5.34"}
 
         ;; Datahike — Clojure-native Datalog database (temporal storage)
-        org.replikativ/datahike {:mvn/version "0.8.1784"}
+        org.replikativ/datahike {:mvn/version "0.8.1788"}
 
         ;; Logging
         com.taoensso/timbre {:mvn/version "6.8.0"}
@@ -34,7 +34,7 @@
         caesium/caesium {:mvn/version "0.15.0"}}
 
  :aliases
- {:build {:deps {io.github.hive-agi/hive-build {:mvn/version "0.1.0"}}
+ {:build {:deps {io.github.hive-agi/hive-build {:mvn/version "0.1.8"}}
           :ns-default hive-build.api}
 
   :dev {:extra-paths ["dev" "test"]

@@ -244,9 +244,13 @@
 
 (st/deftrifecta-from-schema required-capabilities
   hive-system.pattern.construct.core/required-capabilities
-  ;; `(m/schema ...)`, not the raw form: hive-schemas.test re-schemas a form
-  ;; through the DEFAULT registry, which does not carry Construct's local
-  ;; `:registry` — so the raw form resolves ::construct to nil.
+  ;; `(m/schema ...)`, not the raw form. This was a workaround once: against
+  ;; hive-schemas 0.1.14 the levers re-schemaed the form through the DEFAULT
+  ;; registry, which does not carry Construct's local `:registry`, so
+  ;; ::construct resolved to nil. Re-measured 2026-08-22 against 0.1.15 and the
+  ;; raw form works — hive-schemas now carries its own regression tests for it.
+  ;; Kept anyway, on its own merits: a compiled schema cannot be re-formed
+  ;; through a foreign registry by anyone, so the question stops being asked.
   {:in (m/schema cs/Construct)
    :out cs/Capabilities
    :rel (fn [c out] (= out (capabilities-via-walk c)))

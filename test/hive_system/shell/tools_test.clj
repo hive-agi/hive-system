@@ -120,3 +120,38 @@
   (fn [_] (set (map :tool (tools/list-tools))))
   gen/nat
   {:num-tests 5})
+
+;; =============================================================================
+;; A tool is not missing merely because the distro renamed it
+;; =============================================================================
+
+(deftest a-renamed-binary-is-found-under-its-alt-name
+  ;; Debian and Ubuntu install fd as `fdfind` and bat as `batcat`, upstream's
+  ;; names having gone to fdclone and bacula-console-qt. Probing `:bin` alone
+  ;; reported these as MISSING while they sat on PATH, and then recommended
+  ;; `apt install fd-find` — the package that had already installed them.
+  (doseq [[tool-key alts] {:fd ["fdfind"] :bat ["batcat"]}]
+    (testing (str tool-key " resolves under whichever name is present")
+      (let [res (tools/require-tool tool-key)]
+        (when (r/ok? res)
+          (is (contains? (set (cons (name tool-key) alts)) (:bin (:ok res)))
+              "the Result reports the name that answered, so callers spawn THAT")
+          (is (some? (:path (:ok res)))))))))
+
+(deftest a-genuinely-absent-tool-reports-every-name-it-tried
+  (with-redefs [detect/which (fn [_] (r/err :shell/not-found {}))]
+    (let [res (tools/require-tool :fd)]
+      (is (r/err? res))
+      (is (= :tool/missing (:error res)))
+      (is (= ["fd" "fdfind"] (:tried res))
+          "the refusal names both, so 'not installed' is a claim it can back")
+      (is (re-find #"fd / fdfind" (:message res))))))
+
+(deftest the-alt-name-is-load-bearing-and-not-decoration
+  ;; Negative control: drop the alts and the Debian-installed tool goes missing.
+  (with-redefs [detect/which (fn [b] (if (= b "fdfind")
+                                       (r/ok {:path "/usr/bin/fdfind" :program b})
+                                       (r/err :shell/not-found {})))]
+    (is (r/ok? (tools/require-tool :fd))
+        "found via the alt name")
+    (is (= "fdfind" (:bin (:ok (tools/require-tool :fd)))))))

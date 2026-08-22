@@ -7,9 +7,11 @@
    and each run is written to FAIL if the rule under test is removed — the
    negative control is part of the claim, not decoration.
 
-   `rg`, `sd` and `grep` are driven for real. `fd` is not installed on the
-   machine where this landed; its argv is asserted from sd's measured shape and
-   its E2E is skipped LOUDLY, never silently."
+   `rg`, `sd`, `grep` and `fd` are all driven for real. fd was the last one
+   asserted rather than observed, and running it moved the claim twice: sd's
+   positional shape held, and the binary turned out not to be named `fd` on
+   this distro at all — so a correctly shaped argv was still unrunnable. That
+   is why `executable` is tested here beside the argv shapes."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing are use-fixtures]]
             [babashka.fs :as fs]
@@ -41,6 +43,14 @@
 (defn- argv! [tool-id form opts]
   (let [res (search/argv tool-id form opts)]
     (is (r/ok? res) (str "argv refused: " (pr-str res)))
+    (:ok res)))
+
+(defn- spawn-argv!
+  "`search/spawn-argv`, unwrapped — argv[0] resolved to whatever this host
+   installed the tool as."
+  [tool-id form opts]
+  (let [res (search/spawn-argv tool-id form opts)]
+    (is (r/ok? res) (str "spawn-argv refused: " (pr-str res)))
     (:ok res)))
 
 (defn- run
@@ -316,22 +326,85 @@
         (is (str/includes? (str/lower-case err) "look-around"))))))
 
 ;;; =============================================================================
-;;; fd — asserted, not observed
+;;; fd — measured, and the name it is measured under
 ;;; =============================================================================
 
-(deftest the-fd-argv-is-run-when-fd-exists-and-the-gap-is-announced-when-it-does-not
-  (if (r/err? (sh/which "fd"))
-    (println (str "\n  SKIPPED: fd is not installed. "
-                  "hive-system.shell.search/fd is the one profile whose argv is "
-                  "asserted from sd's measured shape rather than observed. "
-                  "Tracked as [PATTERN-FD-ARGV].\n"))
-    (let [dir (fs/create-temp-dir {:prefix "hs-search-fd-"})]
-      (try
-        (spit (fs/file (fs/path dir "core-42.clj")) "")
-        (spit (fs/file (fs/path dir "other.txt")) "")
-        (let [{:keys [exit out]} (run (argv! :fd [:cat "core" [:+ [:class [\- \-] [\0 \9]]]]
-                                             {:flags ["--no-ignore"] :operands [(str dir)]}))]
+(deftest the-fd-argv-runs-and-the-separator-is-load-bearing
+  ;; fd 9.0.0. This is the run [PATTERN-FD-ARGV] asked for: sd's positional
+  ;; shape was asserted for fd, never observed.
+  (let [dir (fs/create-temp-dir {:prefix "hs-search-fd-"})]
+    (try
+      (doseq [n ["core-42.clj" "other.txt" "-dash-9.clj"]]
+        (spit (fs/file (fs/path dir n)) ""))
+      (testing "the argv finds what the construct describes, and only that"
+        (let [{:keys [exit out]} (run (spawn-argv! :fd [:cat "core-" [:+ [:class [\0 \9]]]]
+                                                   {:flags ["--no-ignore"]
+                                                    :operands [(str dir)]}))]
           (is (= 0 exit))
           (is (str/includes? out "core-42.clj"))
-          (is (not (str/includes? out "other.txt"))))
-        (finally (fs/delete-tree dir))))))
+          (is (not (str/includes? out "other.txt")))))
+      (testing "and `--` before the POSITIONAL pattern is what protects a leading dash"
+        ;; The negative control the other profiles already carry. sd's rule is
+        ;; that the separator precedes the pattern because the pattern is just
+        ;; another operand; if fd disagreed, `:tool/separator` would have
+        ;; stopped being derivable from `:tool/flag` alone.
+        (let [good (spawn-argv! :fd [:cat "-dash-" [:+ [:class [\0 \9]]]]
+                                {:flags ["--no-ignore"] :operands [(str dir)]})
+              bad  (vec (remove #{"--"} good))]
+          (is (= ["--" "-dash-[0-9]+"] (subvec good 2 4))
+              "the separator sits before the pattern, not after it")
+          (let [{:keys [exit out]} (run good)]
+            (is (= 0 exit))
+            (is (str/includes? out "-dash-9.clj")))
+          (is (= 2 (:exit (run bad)))
+              "strip it and fd reads the pattern as --max-depth and dies")))
+      (finally (fs/delete-tree dir)))))
+
+;;; =============================================================================
+;;; argv states a grammar; running it needs a name as well
+;;; =============================================================================
+
+(deftest the-binary-name-is-resolved-rather-than-assumed
+  (testing "a tool nobody renamed resolves to its canonical name"
+    (is (= "rg" (:ok (search/executable :rg)))))
+  (testing "fd resolves to whichever name this host installed it under"
+    (let [res (search/executable :fd)]
+      (is (r/ok? res))
+      (is (#{"fd" "fdfind"} (:ok res))
+          "Debian ships it as fdfind; either is correct here, a third name is not")))
+  (testing "an uninstalled tool is refused before the fork, naming every name tried"
+    (search/register! #:tool{:id :nope :bin "hive-no-such-binary"
+                             :bin-alts ["hive-no-such-binary-either"]
+                             :dialect :re2 :flag nil :separator "--"})
+    (let [res (search/executable :nope)]
+      (is (r/err? res))
+      (is (= :search/tool-not-installed (:error res)))
+      (is (= ["hive-no-such-binary" "hive-no-such-binary-either"] (:tried res))
+          "so the caller learns what was looked for, not just that it failed"))))
+
+(deftest spawn-argv-differs-from-argv-in-argv0-and-nothing-else
+  (let [form  [:cat "core" [:+ [:class [\0 \9]]]]
+        opts  {:operands ["src"]}
+        pure  (argv! :fd form opts)
+        spawn (spawn-argv! :fd form opts)]
+    (is (= "fd" (first pure))
+        "argv states the canonical name, so its shape tests are machine-independent")
+    (is (= (:ok (search/executable :fd)) (first spawn)))
+    (is (= (rest pure) (rest spawn))
+        "the grammar is one claim and the packaging another; only argv[0] moves")))
+
+(deftest spawn-argv-refuses-the-construct-before-it-asks-about-the-host
+  ;; Order matters: the dialect refusal is a fact about the command line and
+  ;; reads the same everywhere, so it must not be masked by a fact about this
+  ;; machine. An uninstalled tool asked for an unexpressible construct must
+  ;; still report the construct.
+  (search/register! #:tool{:id :nope :bin "hive-no-such-binary"
+                           :dialect :re2 :flag nil :separator "--"})
+  (let [res (search/spawn-argv :nope [:lookahead "x"] {})]
+    (is (r/err? res))
+    (is (= :construct/unsupported (:error res)))
+    (is (= [:lookaround] (:missing res))))
+  (testing "and once the construct is fine, the host question is the one left"
+    (let [res (search/spawn-argv :nope [:+ :digit] {})]
+      (is (r/err? res))
+      (is (= :search/tool-not-installed (:error res))))))

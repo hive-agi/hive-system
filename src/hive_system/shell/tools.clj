@@ -5,7 +5,8 @@
    (require-tool :ripgrep) => (ok {:path \"/usr/bin/rg\"})
                             or (err :tool/missing {:hints [...]})"
   (:require [hive-system.shell.detect :as detect]
-            [hive-dsl.result :as r]))
+            [hive-dsl.result :as r]
+            [clojure.string :as str]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -20,7 +21,11 @@
                           :cargo "cargo install ripgrep"
                           :pacman "sudo pacman -S ripgrep"
                           :nix "nix-env -iA nixpkgs.ripgrep"}}
+   ;; Debian/Ubuntu install this as `fdfind` — upstream's `fd` was already
+   ;; taken by fdclone — which is why the apt hint below names a package that
+   ;; does not put an `fd` on PATH.
    :fd         {:bin "fd"
+                :bin-alts ["fdfind"]
                 :desc "Fast find alternative"
                 :install {:brew "brew install fd"
                           :apt "sudo apt install fd-find"
@@ -44,7 +49,9 @@
                           :apt "sudo apt install fzf"
                           :cargo "cargo install skim"
                           :pacman "sudo pacman -S fzf"}}
+   ;; Same Debian rename as fd: the `bat` name belongs to bacula-console-qt.
    :bat        {:bin "bat"
+                :bin-alts ["batcat"]
                 :desc "Cat with syntax highlighting"
                 :install {:brew "brew install bat"
                           :apt "sudo apt install bat"
@@ -110,9 +117,26 @@
                    {:manager mgr :command cmd})))
          vec)))
 
+(defn- resolve-bin
+  "Result<{:path .. :bin ..}> for TOOL, trying `:bin` then each `:bin-alts`.
+
+   A distro may install a program under a name other than the upstream one —
+   Debian renames fd to `fdfind` and bat to `batcat` — so probing `:bin` alone
+   reports a tool as missing while it sits on PATH, and then recommends the
+   very package that put it there."
+  [tool]
+  (some (fn [b]
+          (let [res (detect/which b)]
+            (when (r/ok? res) (r/ok (assoc (:ok res) :bin b)))))
+        (into [(:bin tool)] (:bin-alts tool))))
+
 (defn require-tool
   "Check if a tool is available. Returns (ok {:path ... :bin ...})
    or (err :tool/missing {:tool ... :hints ...}).
+
+   `:bin` is the upstream name; a tool may also be installed under one of its
+   `:bin-alts`, and the `:bin` in a successful Result is the name that actually
+   answered — spawn THAT, not `:bin` from the registry.
 
    Available package managers are detected once and cached."
   ([tool-key] (require-tool tool-key nil))
@@ -121,22 +145,24 @@
      (if-not tool
        (r/err :tool/unknown {:tool tool-key
                               :available (vec (keys tool-registry))})
-       (let [result (detect/which (:bin tool))]
-         (if (r/ok? result)
-           (r/ok (assoc (:ok result)
-                        :tool tool-key
-                        :desc (:desc tool)))
-           (let [mgrs (or pkg-managers (detect/detect-pkg-managers))
-                 hints (install-hints tool-key mgrs)]
-             (r/err :tool/missing
-                     {:tool tool-key
-                      :bin (:bin tool)
-                      :desc (:desc tool)
-                      :hints hints
-                      :message (if (seq hints)
-                                 (str (:bin tool) " not found. Install with: "
-                                      (:command (first hints)))
-                                 (str (:bin tool) " not found and no known install method available"))}))))))))
+       (if-let [found (resolve-bin tool)]
+         (r/ok (assoc (:ok found)
+                      :tool tool-key
+                      :desc (:desc tool)))
+         (let [mgrs  (or pkg-managers (detect/detect-pkg-managers))
+               hints (install-hints tool-key mgrs)
+               tried (into [(:bin tool)] (:bin-alts tool))]
+           (r/err :tool/missing
+                   {:tool tool-key
+                    :bin (:bin tool)
+                    :tried tried
+                    :desc (:desc tool)
+                    :hints hints
+                    :message (if (seq hints)
+                               (str (str/join " / " tried) " not found. Install with: "
+                                    (:command (first hints)))
+                               (str (str/join " / " tried)
+                                    " not found and no known install method available"))})))))))
 
 (defn require-tools
   "Check multiple tools at once. Returns a map of {:available {...} :missing {...}}."

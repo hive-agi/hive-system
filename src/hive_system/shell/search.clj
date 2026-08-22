@@ -31,9 +31,14 @@
    settle it. `rg`, `sd` and `grep` are driven for real by the suite, and the
    separator rule `argv` applies is what those runs established.
 
-   `fd` is registered with sd's positional shape but has NOT been run — no fd
-   on the machine where this landed. It is the one profile here whose argv is
-   asserted rather than observed.
+   `fd` is measured too, as of fd 9.0.0: sd's positional shape holds for it,
+   including the negative control — strip the `--` and fd reads `-dash-[0-9]+`
+   as `--max-depth ash-[0-9]+` and exits 2. What that run also established is
+   that the argv was not the whole claim. Debian installs the binary as
+   `fdfind`, so the shape was right, the program was present, and the command
+   was still unrunnable. Hence `executable` and `spawn-argv`: `argv` states the
+   grammar, and resolving argv[0] against PATH is a separate question with its
+   own refusal.
 
    A PATH `grep` is frequently ugrep or another superset, which would accept
    constructs POSIX ERE cannot express. That only ever widens what runs, never
@@ -42,7 +47,8 @@
             [hive-system.pattern.construct.api :as api]
             [hive-system.pattern.construct.ere]
             [hive-system.pattern.construct.schema :as cs]
-            [malli.core :as m]))
+            [malli.core :as m]
+            [hive-system.shell.detect :as detect]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -71,6 +77,11 @@
                         all — `grep` reads BRE until `-E` says otherwise. Not
                         derivable from the dialect: it is a fact about this
                         binary's CLI.
+   :tool/bin-alts       other names the SAME program is installed under. Debian
+                        ships fd as `fdfind`, the name `fd` having already gone
+                        to fdclone. A packaging fact, derivable from neither
+                        `:tool/bin` nor the dialect, and the reason an argv can
+                        be perfectly shaped and still unrunnable.
 
    Where the separator GOES is DERIVED from `:tool/flag` — see `argv`. A field
    declaring it would be a second copy of a decision `:tool/flag` already makes."
@@ -81,6 +92,7 @@
    [:tool/flag [:maybe :string]]
    [:tool/separator [:maybe :string]]
    [:tool/dialect-flags {:optional true} [:vector :string]]
+   [:tool/bin-alts {:optional true} [:vector :string]]
    [:tool/doc {:optional true} :string]])
 
 ;;; =============================================================================
@@ -102,9 +114,15 @@
          :doc "sd — Rust regex find-and-replace. Pattern and replacement are both positional."})
 
 (def fd
-  ;; Same positional shape as sd, and unverified against a real fd — see the
-  ;; `## What is measured` note in the namespace docstring.
-  #:tool{:id :fd :bin "fd" :dialect :re2
+  ;; `fd -- PATTERN PATH`, measured against fd 9.0.0. sd's shape holds: `--`
+  ;; before the positional pattern is load-bearing — without it `-dash-[0-9]+`
+  ;; is read as `--max-depth ash-[0-9]+` and fd exits 2 — and the search path
+  ;; follows the pattern with no second separator.
+  ;;
+  ;; Debian and Ubuntu install the binary as `fdfind`. The argv shape does not
+  ;; change with the packaging; only argv[0] does, which is why the name is
+  ;; data here and resolved by `executable` rather than assumed by `argv`.
+  #:tool{:id :fd :bin "fd" :bin-alts ["fdfind"] :dialect :re2
          :flag nil :separator "--"
          :doc "fd — Rust regex over filenames. Pattern is positional."})
 
@@ -226,6 +244,49 @@
                       (when sep [sep])
                       [expr]
                       (vec operands)])))))))
+
+(defn executable
+  "Result<string>: the name TOOL-ID is actually installed under HERE.
+
+   `:tool/bin` is the canonical name and the one `argv` emits, because an argv
+   is a claim about a program's GRAMMAR and that claim does not change with
+   packaging. argv[0] does: Debian ships fd as `fdfind`, so the canonical name
+   resolves to nothing and the argv `argv` built is correct and unrunnable.
+
+   Tries `:tool/bin` first, then `:tool/bin-alts` in order, and refuses naming
+   every name it tried — rather than letting the caller meet it as an ENOENT
+   from the fork."
+  [tool-id]
+  (r/let-ok [t (tool tool-id)]
+    (let [names (into [(:tool/bin t)] (:tool/bin-alts t))]
+      (or (some (fn [n] (when (r/ok? (detect/which n)) (r/ok n))) names)
+          (r/err :search/tool-not-installed {:id tool-id :tried names})))))
+
+(m/=> executable [:=> [:cat :keyword] :any])
+
+(defn spawn-argv
+  "Result<vector<string>>: `argv`, with argv[0] resolved against PATH — the
+   argv to actually spawn.
+
+   Two refusals, both before the fork: the dialect cannot express the construct
+   (`:construct/unsupported`), or the program is not installed under any name
+   it goes by (`:search/tool-not-installed`).
+
+   The construct is checked FIRST, deliberately. That refusal is a fact about
+   the command line and reads the same on every machine; the PATH one is a fact
+   about this host. Resolving first would let the same call fail two different
+   ways depending on what happens to be installed.
+
+   Use `argv` to reason about the command line, this to run it."
+  ([tool-id form] (spawn-argv tool-id form {}))
+  ([tool-id form opts]
+   (r/let-ok [args (argv tool-id form opts)
+              bin  (executable tool-id)]
+     (r/ok (assoc args 0 bin)))))
+
+(m/=> spawn-argv [:function
+                  [:=> [:cat :keyword :any] :any]
+                  [:=> [:cat :keyword :any [:maybe :map]] :any]])
 
 (m/=> argv [:function
             [:=> [:cat :keyword :any] :any]

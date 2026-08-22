@@ -45,6 +45,58 @@
       (.start))
     p))
 
+(defn read-lines-capped
+  "Read at most LIMIT lines from `is`, and at most MAX-BYTES of them.
+   Returns {:lines […] :truncated? bool :reason …}.
+
+   ## Why it reads one line PAST the limit
+
+   A caller handed exactly LIMIT lines cannot tell a command that printed LIMIT
+   from one that printed more, and those are different answers — the same
+   reason `fs.core/find-files` refuses rather than returning a partial walk.
+   So one extra line is read purely to decide `:truncated?`, and discarded; it
+   is never returned.
+
+   That extra read blocks while a slow producer is still computing, which is
+   the honest behaviour: until the next line arrives or the stream closes,
+   `is there more?` genuinely has no answer yet. Bound it with a deadline —
+   `drain-lines-capped` is the abandonable form.
+
+   ## Why bytes as well as lines
+
+   A line budget does not bound memory: one pathological line exhausts the heap
+   while the line count sits at 1. Time, admission and output cardinality are
+   independent budgets, and so are the two dimensions of output.
+
+   `:reason` names which bound stopped it — :eof, :max-lines or :max-bytes."
+  [^InputStream is ^long limit ^long max-bytes]
+  (try
+    (let [rdr (BufferedReader. (InputStreamReader. is))]
+      (loop [acc (transient []) n 0 bytes 0]
+        (if-let [line (.readLine rdr)]
+          (let [bytes' (+ bytes (count line) 1)]
+            (cond
+              ;; the read one past the limit: decide, discard, stop
+              (>= n limit)   {:lines (persistent! acc) :truncated? true :reason :max-lines}
+              (> bytes' max-bytes) {:lines (persistent! acc) :truncated? true :reason :max-bytes}
+              :else          (recur (conj! acc line) (inc n) bytes')))
+          {:lines (persistent! acc) :truncated? false :reason :eof})))
+    (catch Exception _
+      {:lines [] :truncated? false :reason :eof})))
+
+(defn drain-lines-capped
+  "`read-lines-capped` on a daemon thread. Returns a promise of its map.
+
+   Collect with a BOUNDED deref, for the reason `drain` gives: a descendant
+   holding the inherited pipe must not extend the caller's deadline."
+  [^InputStream is limit max-bytes]
+  (let [p (promise)]
+    (doto (Thread. #(deliver p (read-lines-capped is limit max-bytes))
+                   "hive-system-drain-capped")
+      (.setDaemon true)
+      (.start))
+    p))
+
 (defn pump
   "Copy `from-out` into `to-in` on a daemon thread, closing `to-in` at EOF so
    the downstream process sees the end of its input.

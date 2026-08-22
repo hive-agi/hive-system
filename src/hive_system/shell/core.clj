@@ -92,7 +92,66 @@
     (into {} (System/getenv)))
 
   (shell-which [_ program]
-    (detect/which program)))
+    (detect/which program))
+
+  proto/IBoundedShell
+  (shell-lines! [_ cmd opts]
+    ;; Same timeout doctrine as shell-exec!: the deadline is produced OUTSIDE
+    ;; try-effect*, or an err would come back wrapped in `ok`.
+    (let [opts       (merge default-opts opts)
+          timeout-ms (or (:timeout-ms opts) 30000)
+          max-lines  (or (:max-lines opts) 1000)
+          max-bytes  (or (:max-bytes opts) (* 8 1024 1024))
+          start      (System/nanoTime)
+          elapsed    #(/ (- (System/nanoTime) start) 1e6)
+          ran        (try-effect* :shell/exec-failed
+                       (let [proc (.start (build-process cmd opts))]
+                         {:proc     proc
+                          ;; both reads are abandonable: the cap may fire long
+                          ;; before EOF, and EOF may never come at all while a
+                          ;; descendant holds the inherited pipe
+                          :stdout-p (streams/drain-lines-capped
+                                     (.getInputStream proc) max-lines max-bytes)
+                          :stderr-p (streams/drain (.getErrorStream proc))}))]
+      (if (r/err? ran)
+        ran
+        (let [{:keys [stdout-p stderr-p]} (:ok ran)
+              ^Process proc (:proc (:ok ran))
+              capped        (deref stdout-p (long timeout-ms) ::timeout)]
+          (if (= ::timeout capped)
+            (do (try (tree/destroy-tree! proc true) (catch Exception _ nil))
+                (r/err :shell/timeout {:cmd cmd
+                                       :timeout-ms  timeout-ms
+                                       :duration-ms (elapsed)}))
+            (let [{:keys [lines truncated? reason]} capped
+                  ;; A cap is a decision to stop the producer, not merely to
+                  ;; stop reading it: leaving it running would spend exactly
+                  ;; the resources the budget was declared to bound.
+                  _         (when truncated?
+                              (try (tree/destroy-tree! proc true) (catch Exception _ nil)))
+                  remaining (max 0 (long (- timeout-ms (elapsed))))
+                  finished? (.waitFor proc
+                                      (if truncated?
+                                        (long streams/flush-grace-ms)
+                                        remaining)
+                                      TimeUnit/MILLISECONDS)
+                  err       (deref stderr-p streams/flush-grace-ms ::open)]
+              (if (or finished? truncated?)
+                (r/ok (cond-> {:lines       lines
+                               :truncated?  truncated?
+                               :reason      reason
+                               ;; killed for exceeding the budget, so whatever
+                               ;; exit status it now carries describes the KILL
+                               :exit        (when-not truncated?
+                                              (when finished? (.exitValue proc)))
+                               :stderr      (if (= ::open err) "" err)
+                               :duration-ms (elapsed)
+                               :cmd         cmd}
+                        (= ::open err) (assoc :detached true)))
+                (do (try (tree/destroy-tree! proc true) (catch Exception _ nil))
+                    (r/err :shell/timeout {:cmd cmd
+                                           :timeout-ms  timeout-ms
+                                           :duration-ms (elapsed)}))))))))))
 
 (defn make-shell
   "Create a Shell instance with optional default opts.
@@ -114,6 +173,32 @@
      :timeout-ms — kill after N ms (default 30s)"
   ([cmd] (exec! cmd {}))
   ([cmd opts] (proto/shell-exec! @default-shell cmd opts)))
+
+(defn lines!
+  "Run a command, reading at most a bounded number of output lines. Result.
+
+   `exec!` captures everything the command printed, so its memory cost is set
+   by the child. Use this where the caller has a budget:
+
+     (lines! [\"rg\" \"--files\" root] {:max-lines 1000})
+     => (ok {:lines […] :truncated? true :reason :max-lines :exit nil …})
+
+   Opts, on top of `exec!`'s:
+     :max-lines  — lines to return (default 1000)
+     :max-bytes  — total bytes to read (default 8 MiB). A line budget does not
+                   bound memory; one pathological line exhausts the heap with
+                   the line count still at 1.
+
+   `:truncated?` is the load-bearing key. A caller handed exactly :max-lines
+   lines cannot otherwise tell a command that printed that many from one that
+   printed more, and a silently truncated list reads as a complete answer.
+   `:reason` names which bound stopped it: :eof, :max-lines or :max-bytes.
+
+   When truncated the process TREE is destroyed — a cap is a decision to stop
+   the producer, not merely to stop reading it — and `:exit` is nil, because
+   the only status such a process could report describes the kill."
+  ([cmd] (lines! cmd {}))
+  ([cmd opts] (proto/shell-lines! @default-shell cmd opts)))
 
 (defn exec-ok!
   "Like exec! but returns (err ...) if exit code is non-zero."

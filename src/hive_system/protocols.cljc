@@ -108,6 +108,19 @@
   (shell-which [this program]
     "Resolve program path. Returns Result with {:path} or err."))
 
+(defprotocol IBoundedShell
+  "Running a command whose OUTPUT CARDINALITY is bounded, not only its wall time.
+
+   Segregated from IShell on purpose. `shell-exec!` captures everything the
+   command printed, which is the right contract when the caller wants the
+   output; it is the wrong one when the caller has a line budget, because the
+   memory cost is set by the CHILD rather than by the caller. A timeout does
+   not bound memory and an admission gate does not bound output — the three
+   budgets are independent, and this is the third."
+  (shell-lines! [this cmd opts]
+    "Run cmd, reading at most :max-lines lines (and :max-bytes bytes) of stdout.
+     Returns Result with {:lines :truncated? :reason :exit :stderr :duration-ms}."))
+
 
 (defprotocol IHostOSRelease
   "Read host operating-system release identity.

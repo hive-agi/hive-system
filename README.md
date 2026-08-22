@@ -1,5 +1,14 @@
 # hive-system
 
+<!-- hive-badges -->
+
+[![Clojars Project](https://img.shields.io/clojars/v/io.github.hive-agi/hive-system.svg)](https://clojars.org/io.github.hive-agi/hive-system)
+[![cljdoc](https://cljdoc.org/badge/io.github.hive-agi/hive-system)](https://cljdoc.org/d/io.github.hive-agi/hive-system/CURRENT)
+[![release](https://github.com/hive-agi/hive-system/actions/workflows/release.yml/badge.svg)](https://github.com/hive-agi/hive-system/actions/workflows/release.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+
+<!-- /hive-badges -->
+
 The systems-programming foundation of the [hive](https://github.com/hive-agi)
 ecosystem. Every host capability a Clojure program reaches for — a process, a
 shell, the filesystem, crypto, secrets, a GPU, a regex — sits behind a

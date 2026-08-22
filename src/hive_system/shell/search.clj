@@ -14,33 +14,33 @@
    from the shape of the construct, so the refusal belongs here, before the
    fork, naming the missing capability as data.
 
+   With `grep` the argument is stronger still. GNU grep does not reject what it
+   cannot do: `grep -E '\\d+'` matches a literal `d`, exit 0, no warning. There
+   the gate is not saving the caller a stderr parse, it is saving them a wrong
+   answer they had no way to notice.
+
    ## Tools are data, not code
 
-   A tool is a `Tool` map: which dialect it speaks, and how a pattern enters
-   its argv. Adding `ugrep` is a `register!` call, not an edit to `argv` —
-   the open set gets a registry, not a `case`.
+   A tool is a `Tool` map: which dialect it speaks, what it needs in order to
+   speak it, and how a pattern enters its argv. Adding `ugrep` is a `register!`
+   call, not an edit to `argv` — the open set gets a registry, not a `case`.
 
    ## What is measured
 
    An argv is a claim about a program's parser, and only that program can
-   settle it. `rg` and `sd` are driven for real by the suite, and the
+   settle it. `rg`, `sd` and `grep` are driven for real by the suite, and the
    separator rule `argv` applies is what those runs established.
 
    `fd` is registered with sd's positional shape but has NOT been run — no fd
    on the machine where this landed. It is the one profile here whose argv is
    asserted rather than observed.
 
-   ## grep is deliberately absent
-
-   `grep -E` wants POSIX ERE, and no ERE emitter exists: ERE has no
-   non-capturing group, so regal's `(?:…)` output is not ERE even behind a
-   capability gate (see the `:posix-ere` note in construct.regal). `grep -P`
-   wants PCRE, which no registered dialect describes either. Registering grep
-   against `:re2` would be a guess, and a wrong one — so grep is refused by
-   omission, which `tool` reports as `:search/unknown-tool` with the known set
-   attached."
+   A PATH `grep` is frequently ugrep or another superset, which would accept
+   constructs POSIX ERE cannot express. That only ever widens what runs, never
+   narrows it, so emitting strict ERE stays correct whichever binary answers."
   (:require [hive-dsl.result :as r]
             [hive-system.pattern.construct.api :as api]
+            [hive-system.pattern.construct.ere]
             [hive-system.pattern.construct.schema :as cs]
             [malli.core :as m]))
 
@@ -63,12 +63,16 @@
 (def Tool
   "A pattern-taking CLI, as data.
 
-   :tool/flag       how the pattern is introduced, or nil if it is positional.
-                    A flag such as `--regexp` also stops a pattern that begins
-                    with `-` from being read as a flag.
-   :tool/separator  the tool's end-of-flags separator, or nil if it has none.
+   :tool/flag           how the pattern is introduced, or nil if it is
+                        positional. A flag such as `--regexp` also stops a
+                        pattern that begins with `-` from being read as a flag.
+   :tool/separator      the tool's end-of-flags separator, or nil if it has none.
+   :tool/dialect-flags  what the tool needs in order to speak `:tool/dialect` at
+                        all — `grep` reads BRE until `-E` says otherwise. Not
+                        derivable from the dialect: it is a fact about this
+                        binary's CLI.
 
-   Where that separator GOES is DERIVED from `:tool/flag` — see `argv`. A field
+   Where the separator GOES is DERIVED from `:tool/flag` — see `argv`. A field
    declaring it would be a second copy of a decision `:tool/flag` already makes."
   [:map
    [:tool/id ToolId]
@@ -76,6 +80,7 @@
    [:tool/dialect cs/DialectId]
    [:tool/flag [:maybe :string]]
    [:tool/separator [:maybe :string]]
+   [:tool/dialect-flags {:optional true} [:vector :string]]
    [:tool/doc {:optional true} :string]])
 
 ;;; =============================================================================
@@ -103,9 +108,20 @@
          :flag nil :separator "--"
          :doc "fd — Rust regex over filenames. Pattern is positional."})
 
+(def grep
+  ;; `-E` is what makes grep read ERE rather than BRE, and `-e` introduces the
+  ;; pattern so a leading `-` is not read as a flag. `--` then guards the paths.
+  ;;
+  ;; A PATH `grep` is routinely ugrep or another superset. That is safe in this
+  ;; direction only: everything :posix-ere emits, a superset also accepts. It is
+  ;; the reason the dialect emits ERE rather than trusting whatever is on PATH.
+  #:tool{:id :grep :bin "grep" :dialect :posix-ere
+         :flag "-e" :separator "--" :dialect-flags ["-E"]
+         :doc "grep -E — POSIX ERE. No \\d, no lazy, no lookaround, no non-capturing group."})
+
 (def built-in
   "Every profile this namespace ships."
-  [ripgrep sd fd])
+  [ripgrep sd fd grep])
 
 ;;; =============================================================================
 ;;; Registry
@@ -166,8 +182,8 @@
 
    opts:
      :flags     — argv entries placed before the pattern
-     :operands  — argv entries placed after it (rg: paths; sd: the replacement,
-                  then files)
+     :operands  — argv entries placed after it (rg/grep: paths; sd: the
+                  replacement, then files)
 
    ## Where the separator goes
 
@@ -185,22 +201,27 @@
    => (ok [\"rg\" \"--regexp\" \"\\\\d+-\" \"--\" \"src\"])
 
    (argv :sd [:+ :digit] {:operands [\"N\" \"f.txt\"]})
-   => (ok [\"sd\" \"--\" \"\\\\d+\" \"N\" \"f.txt\"])"
+   => (ok [\"sd\" \"--\" \"\\\\d+\" \"N\" \"f.txt\"])
+
+   (argv :grep [:+ [:class [\\0 \\9]]] {:operands [\"src\"]})
+   => (ok [\"grep\" \"-E\" \"-e\" \"[0-9]+\" \"--\" \"src\"])"
   ([tool-id form] (argv tool-id form {}))
   ([tool-id form {:keys [flags operands]}]
    (r/let-ok [t    (tool tool-id)
               expr (api/->expr (:tool/dialect t) form)]
-     (let [sep       (:tool/separator t)
+     (let [sep          (:tool/separator t)
            pattern-flag (:tool/flag t)]
        (r/ok (into []
                    cat
                    (if pattern-flag
                      [[(:tool/bin t)]
+                      (vec (:tool/dialect-flags t))
                       (vec flags)
                       [pattern-flag expr]
                       (when (and sep (seq operands)) [sep])
                       (vec operands)]
                      [[(:tool/bin t)]
+                      (vec (:tool/dialect-flags t))
                       (vec flags)
                       (when sep [sep])
                       [expr]

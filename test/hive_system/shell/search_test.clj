@@ -7,10 +7,9 @@
    and each run is written to FAIL if the rule under test is removed — the
    negative control is part of the claim, not decoration.
 
-   `rg` is a hard requirement, as it is in the :re2 differential suite. `sd` is
-   required for its own two tests. `fd` is not installed on the machine where
-   this landed; its argv is asserted from sd's measured shape and its E2E is
-   skipped LOUDLY, never silently."
+   `rg`, `sd` and `grep` are driven for real. `fd` is not installed on the
+   machine where this landed; its argv is asserted from sd's measured shape and
+   its E2E is skipped LOUDLY, never silently."
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing are use-fixtures]]
             [babashka.fs :as fs]
@@ -80,16 +79,19 @@
 ;;; =============================================================================
 
 (deftest the-built-in-profiles-are-registered-on-load
-  (is (= #{:rg :sd :fd} (set (keys (search/registered)))))
+  (is (= #{:rg :sd :fd :grep} (set (keys (search/registered)))))
   (doseq [[id t] (search/registered)]
-    (is (= id (:tool/id t)) "a profile is keyed by its own id")
-    (is (= :re2 (:tool/dialect t)) "every shipped tool speaks Rust regex")))
+    (is (= id (:tool/id t)) "a profile is keyed by its own id"))
+  (testing "and each names a dialect that is actually registered"
+    (doseq [[id t] (search/registered)]
+      (is (r/ok? (dial/emitter (:tool/dialect t)))
+          (str id " claims " (:tool/dialect t))))))
 
-(deftest grep-is-refused-by-omission-and-says-what-it-knows
-  (let [res (search/tool :grep)]
+(deftest an-unregistered-tool-is-refused-and-says-what-it-knows
+  (let [res (search/tool :ugrep)]
     (is (r/err? res))
     (is (= :search/unknown-tool (:error res)))
-    (is (= [:fd :rg :sd] (:known res))
+    (is (= [:fd :grep :rg :sd] (:known res))
         "the refusal names the alternatives rather than leaving the caller to guess")))
 
 (deftest an-invalid-profile-is-refused-not-stored
@@ -103,7 +105,7 @@
   ;; Ordering matters: resolving the tool first is what lets `argv` report
   ;; :search/unknown-tool instead of a confusing normalization error about a
   ;; form it was never going to emit.
-  (let [res (search/argv :grep [:definitely-not-an-op "x"] {})]
+  (let [res (search/argv :ugrep [:definitely-not-an-op "x"] {})]
     (is (= :search/unknown-tool (:error res)))))
 
 ;;; =============================================================================
@@ -129,7 +131,14 @@
     ["sd" "--" "\\d+" "N" "f.txt"]
 
     :fd [:cat "core" [:? ".clj"]] {:operands ["src"]}
-    ["fd" "--" "core(?:\\.clj)?" "src"]))
+    ["fd" "--" "core(?:\\.clj)?" "src"]
+
+    ;; dialect-flags come first: grep reads BRE until -E says otherwise
+    :grep [:+ [:class [\0 \9]]] {:operands ["src"]}
+    ["grep" "-E" "-e" "[0-9]+" "--" "src"]
+
+    :grep [:+ [:class [\0 \9]]] {:flags ["-c"] :operands ["src"]}
+    ["grep" "-E" "-c" "-e" "[0-9]+" "--" "src"]))
 
 (deftest argv-emits-exactly-what-the-dialect-emits
   ;; argv must not re-render, re-escape or decorate the expression: the pattern
@@ -159,19 +168,37 @@
 (deftest runnable?-answers-from-the-shape-alone
   (is (= true  (:ok (search/runnable? :rg [:+ :digit]))))
   (is (= false (:ok (search/runnable? :rg [:lookahead "x"]))))
-  (is (r/err? (search/runnable? :grep [:+ :digit]))
+  (testing "and it separates the TOOLS, not just the constructs"
+    (is (= false (:ok (search/runnable? :grep [:+ :digit])))
+        "grep speaks ERE, which has no \\d")
+    (is (= true  (:ok (search/runnable? :grep [:+ [:class [\0 \9]]])))
+        "spelled as a bracket range it runs everywhere"))
+  (is (r/err? (search/runnable? :ugrep [:+ :digit]))
       "an unknown tool is an error, not an unrunnable one"))
 
 (deftest explain-partitions-the-registry
-  (let [{:keys [runnable blocked requires]} (:ok (search/explain [:lookahead "x"]))]
-    (is (= #{:lookaround} requires))
-    (is (empty? runnable))
-    (is (= {:fd [:lookaround] :rg [:lookaround] :sd [:lookaround]} (into {} blocked))))
-  (let [{:keys [runnable blocked]} (:ok (search/explain [:+ :digit]))]
-    (is (= #{:fd :rg :sd} (set runnable)))
-    (is (empty? blocked)))
+  (testing "nothing runs a lookahead"
+    (let [{:keys [runnable blocked requires]} (:ok (search/explain [:lookahead "x"]))]
+      (is (= #{:lookaround} requires))
+      (is (empty? runnable))
+      (is (= {:fd [:lookaround] :grep [:lookaround]
+              :rg [:lookaround] :sd [:lookaround]}
+             (into {} blocked)))))
+
+  (testing "a perl class splits the registry — which is the answer a caller wants"
+    (let [{:keys [runnable blocked]} (:ok (search/explain [:+ :digit]))]
+      (is (= #{:fd :rg :sd} (set runnable)))
+      (is (= {:grep [:perl-class]} (into {} blocked))
+          "and it names WHY grep is out, so the caller can respell it")))
+
+  (testing "respelled as a bracket range, every tool can run it"
+    (let [{:keys [runnable blocked]} (:ok (search/explain [:+ [:class [\0 \9]]]))]
+      (is (= #{:fd :grep :rg :sd} (set runnable)))
+      (is (empty? blocked))))
+
   (testing "runnable and blocked partition the registry for any construct"
-    (doseq [form [[:+ :digit] [:lookahead "x"] [:atomic "y"] [:*? "z"]]]
+    (doseq [form [[:+ :digit] [:lookahead "x"] [:atomic "y"] [:*? "z"]
+                  [:capture "c"] [:class [\A \a]]]]
       (let [{:keys [runnable blocked]} (:ok (search/explain form))]
         (is (= (set (keys (search/registered)))
                (into (set runnable) (keys blocked))))
@@ -252,6 +279,31 @@
         (is (= 2 exit) "a separator placed after the pattern leaves the pattern exposed")
         (is (str/includes? err "unexpected argument"))
         (is (= "-42\n" (slurp path)) "and the file is untouched")))))
+
+(deftest the-grep-argv-runs-and-the-dialect-flag-is-load-bearing
+  (with-file "42-abc\nnope\n"
+    (fn [path]
+      (testing "the built argv finds what the construct describes"
+        (let [{:keys [exit out]} (run (argv! :grep [:cat [:+ [:class [\0 \9]]] "-"]
+                                             {:operands [path]}))]
+          (is (= 0 exit))
+          (is (= "42-abc" out))))
+
+      (testing "-E is load-bearing: without it grep reads BRE, where + is a literal"
+        ;; Negative control. In BRE `[0-9]+-` means a digit followed by a
+        ;; literal `+`, so the same pattern quietly stops matching -- grep does
+        ;; not report anything, it just answers a different question.
+        (let [built   (argv! :grep [:cat [:+ [:class [\0 \9]]] "-"] {:operands [path]})
+              without (vec (remove #{"-E"} built))
+              {:keys [exit]} (run without)]
+          (is (= 1 exit) "BRE finds nothing, and says so only by exit code")))
+
+      (testing "a construct ERE cannot express never reaches grep"
+        (let [res (search/argv :grep [:+ :digit] {:operands [path]})]
+          (is (r/err? res))
+          (is (= :construct/unsupported (:error res)))
+          (is (= [:perl-class] (:missing res))
+              "and this is the case grep would have answered WRONGLY, not loudly"))))))
 
 (deftest a-refused-construct-is-one-rg-genuinely-rejects
   ;; The gate must not be merely cautious: what it refuses, rg must also refuse.

@@ -35,16 +35,28 @@
 (def Capability
   "A regex feature a dialect may or may not provide.
 
-   :lookaround  (?=…) (?!…) (?<=…) (?<!…)
-   :atomic      (?>…) — a group that does not backtrack
-   :lazy        *? +? ?? {n,m}? — reluctant quantifiers
-   :perl-class  \\d \\w \\s and complements
+   :lookaround       (?=…) (?!…) (?<=…) (?<!…)
+   :atomic           (?>…) — a group that does not backtrack
+   :lazy             *? +? ?? {n,m}? — reluctant quantifiers
+   :perl-class       \\d \\w \\s and complements
+   :capture          a group whose INDEX is promised. POSIX ERE has only one
+                     grouping syntax, so every structural group it emits also
+                     captures and shifts the numbering — a dialect that cannot
+                     group without capturing cannot honour `:match/groups`.
+   :control-escape   \\t \\n \\r \\f \\a \\e \\0 \\v — naming a control character
+                     rather than embedding the byte. ERE has no such spelling,
+                     and `grep -E '\\t'` matches a literal `t`.
+   :collation-range  a bracket range by CODE POINT. POSIX bracket ranges are
+                     ordered by the runtime locale's collation, so a range
+                     whose ends are not both upper, both lower or both digit
+                     denotes a different set per locale — or none at all.
 
    Every member is PRODUCIBLE: some Construct requires it, so the refusal
    property has a case for each. A feature no construct can express does not
    belong here until one can — a capability with no producer makes its own
    test vacuous."
-  [:enum :lookaround :atomic :lazy :perl-class])
+  [:enum :lookaround :atomic :lazy :perl-class :capture :control-escape
+   :collation-range])
 
 (def Capabilities
   "A set of capabilities: what a dialect provides, or what a construct needs."

@@ -36,17 +36,47 @@
   (into #{} (rest cs/NAryOp)))
 
 (def ^:private token->capability
-  "A token that only exists in a Perl-ish dialect."
-  (zipmap [:digit :non-digit :word :non-word :whitespace :non-whitespace
-           :vertical-whitespace :line-break]
-          (repeat :perl-class)))
+  "A token no POSIX-level dialect can spell.
+
+   The perl classes are one family; the control-character escapes are another,
+   and they are NOT the same capability — a dialect can perfectly well know
+   `\\t` and not know `\\d`."
+  (merge (zipmap [:digit :non-digit :word :non-word :whitespace :non-whitespace
+                  :vertical-whitespace :line-break]
+                 (repeat :perl-class))
+         (zipmap [:newline :return :tab :form-feed :alert :escape :null
+                  :vertical-tab]
+                 (repeat :control-escape))))
+
+(defn- portable-range?
+  "Are LO and HI in the same POSIX character class?
+
+   Only then does `[lo-hi]` name the same set everywhere. A bracket range is
+   collation-ordered, not code-point-ordered: measured on GNU grep 3.11 under
+   LANG=en_US.UTF-8, `[A-a]` is rejected outright as an invalid range end,
+   while `[0-A]` is accepted and matches a DIFFERENT set than the JVM's."
+  [lo hi]
+  (boolean
+   (or (and (Character/isUpperCase ^char lo) (Character/isUpperCase ^char hi))
+       (and (Character/isLowerCase ^char lo) (Character/isLowerCase ^char hi))
+       (and (Character/isDigit ^char lo)     (Character/isDigit ^char hi)))))
+
+(defn- entry->capability
+  "What ONE class entry demands: a shorthand token demands its family, a range
+   that crosses classes demands code-point ordering."
+  [entry]
+  (cond
+    (vector? entry) (when-not (portable-range? (first entry) (second entry))
+                      :collation-range)
+    :else           (token->capability entry)))
 
 (def ^:private op->capability
   {:lookahead           :lookaround
    :negative-lookahead  :lookaround
    :lookbehind          :lookaround
    :negative-lookbehind :lookaround
-   :atomic              :atomic})
+   :atomic              :atomic
+   :capture             :capture})
 
 ;;; =============================================================================
 ;;; Normalize — authored form -> Construct
@@ -94,7 +124,13 @@
 
 (defn- normalize-repeat
   [[_ form & bounds]]
-  (let [[lo hi] bounds]
+  ;; regal reads ONE bound as exact — `[:repeat x 3]` is `{3}`, not `{3,}` — and
+  ;; an explicit nil upper bound as unbounded. Collapsing both into an absent
+  ;; `:construct/max` made `{3}` and `{3,}` the same value, and every emitter
+  ;; then rendered the unbounded one as exact.
+  (let [exact?  (= 1 (count bounds))
+        [lo hi] bounds
+        hi      (if exact? lo hi)]
     (cond
       (not (and (int? lo) (nat-int? lo)))
       (r/err :construct/bad-repeat-bound {:bound lo})
@@ -161,15 +197,20 @@
 (defn ->regal
   "The regal form for CONSTRUCT. Inverse of `normalize` up to the authored
    form's redundancy (`[:not …]` normalizes into a negated `:class` and comes
-   back as `[:not …]`)."
-  [{:construct/keys [op text token args entries negated? arg min max lazy?]
-    :as construct}]
+   back as `[:not …]`; `[:repeat x 3 3]` comes back as `[:repeat x 3]`).
+
+   An ABSENT `:construct/max` is unbounded, and must be projected as an
+   explicit nil upper bound: regal reads `[:repeat x 3]` as `{3}`, so dropping
+   the bound would emit an exact repeat for an unbounded construct."
+  [{:construct/keys [op text token args entries negated? arg min max lazy?]}]
   (case op
     :literal text
     :token   token
     :class   (into [(if negated? :not :class)] entries)
-    :repeat  (cond-> [(if lazy? :lazy-repeat :repeat) (->regal arg) min]
-               (some? max) (conj max))
+    :repeat  (let [head (if lazy? :lazy-repeat :repeat)]
+               (if (= min max)
+                 [head (->regal arg) min]
+                 [head (->regal arg) min max]))
     (:* :+ :?) (into [(get lazy-spelling [op (boolean lazy?)] op)] (map ->regal) args)
     (into [op] (map ->regal) args)))
 
@@ -194,7 +235,7 @@
           (op->capability op)              (conj (op->capability op))
           (and lazy? (not= op :literal))   (conj :lazy)
           (token->capability token)        (conj (token->capability token))
-          (seq entries)                    (into (keep token->capability entries)))
+          (seq entries)                    (into (keep entry->capability entries)))
         (mapcat required-capabilities)
         (sub-constructs construct)))
 

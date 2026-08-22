@@ -33,7 +33,9 @@
             [hive-system.pattern.construct.core :as cc]
             [hive-system.pattern.construct.test-gen :as tg]
             [hive-system.shell.core :as sh]
-            [lambdaisland.regal.generator :as rgen]))
+            [lambdaisland.regal.generator :as rgen]
+            [clojure.walk :as walk]
+            [clojure.set :as set]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -66,6 +68,32 @@
           {:exit :exec-failed :stderr (pr-str res) :matched 0}))
       (finally (fs/delete-if-exists f)))))
 
+(def ^:private newline-tokens
+  "Tokens that put a literal newline into the emitted pattern."
+  #{:newline :return})
+
+(defn- line-oriented?
+  "Can rg be asked about CONSTRUCT at all, in its ordinary line-oriented mode?
+
+   rg REFUSES a pattern containing a literal newline — `the literal \"\\n\" is
+   not allowed in a regex` — and tells you to pass --multiline. That is a limit
+   of the TOOL, not of the :re2 dialect: the Rust regex crate compiles `\\n`
+   perfectly well, and :re2 is right to keep providing :control-escape.
+
+   `line-subjects` already drops SUBJECTS containing a newline for the same
+   line-orientation reason; excluding the patterns is the other half of that
+   rule, and its absence is why this corpus could draw a construct the property
+   then scored as a parse failure."
+  [construct]
+  (let [tokens (atom #{})]
+    (walk/postwalk
+     (fn [x] (when (keyword? x) (swap! tokens conj x)) x)
+     construct)
+    (empty? (set/intersection newline-tokens @tokens))))
+
+(def ^:private gen-line-oriented-construct
+  (gen/such-that line-oriented? tg/gen-construct 100))
+
 (defn- line-subjects
   "Strings drawn from CONSTRUCT's own generator that a line-oriented tool can
    actually be asked about: no embedded newline, not blank, and ASCII only.
@@ -97,7 +125,7 @@
 ;;; =============================================================================
 
 (defspec rg-accepts-every-re2-emission-and-matches-its-own-generator 40
-  (prop/for-all [c tg/gen-construct]
+  (prop/for-all [c gen-line-oriented-construct]
     (let [res (api/->expr :re2 c)]
       (and
        ;; the generator emits no lookaround or atomic, so :re2 must never refuse
@@ -107,8 +135,30 @@
          (if (empty? subjects)
            true
            (let [{:keys [exit matched]} (rg pattern subjects)]
-             (and (not= 2 exit)                    ; rg parsed it
-                  (= (count subjects) matched)))))))))  ; and agreed with the oracle
+             (and (not= 2 exit)                      ; rg parsed it
+                  (= (count subjects) matched)))))))))  ; and agreed with the oracle  ; and agreed with the oracle  ; and agreed with the oracle
+
+(deftest the-newline-exclusion-is-rg's-limit-and-not-the-dialect's
+  ;; The corpus filter above must be justified, not merely convenient. Two
+  ;; claims, and they point in opposite directions:
+  (let [c (:ok (cc/normalize [:cat :newline "!"]))]
+    (testing ":re2 emits it — the Rust regex crate has no problem with \\n"
+      (is (= "\\n!" (:ok (api/->expr :re2 c))))
+      (is (empty? (:missing (api/->expr :re2 c)))))
+    (testing "but rg will not run it without --multiline"
+      (let [{:keys [exit stderr]} (rg "\\n!" ["!"])]
+        (is (= 2 exit))
+        (is (str/includes? (str stderr) "not allowed in a regex"))))
+    (testing "and it is a MODE, not an incapacity — --multiline accepts the same pattern"
+      (let [f (fs/create-temp-file {:prefix "hs-re2-nl-" :suffix ".txt"})]
+        (try
+          (spit (fs/file f) "x\n!\n")
+          (let [res (sh/exec! ["rg" "--no-config" "--no-ignore" "--text" "--multiline"
+                              "--count" "--regexp" "\\n!" "--" (str f)]
+                              {:timeout-ms 15000})]
+            (is (= 0 (:exit (:ok res)))
+                "so :control-escape stays a capability :re2 genuinely provides"))
+          (finally (fs/delete-if-exists f)))))))
 
 (deftest a-known-re2-pattern-round-trips-through-rg
   (testing "a hand-checked case, so a wholesale generator failure cannot pass silently"

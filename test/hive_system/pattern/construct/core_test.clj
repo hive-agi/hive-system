@@ -21,15 +21,33 @@
   #{:digit :non-digit :word :non-word :whitespace :non-whitespace
     :vertical-whitespace :line-break})
 
+(def ^:private control-tokens
+  "Tokens that name a control character instead of embedding the byte."
+  #{:newline :return :tab :form-feed :alert :escape :null :vertical-tab})
+
+(defn- cross-class-range?
+  "An independent re-derivation: a range is code-point-only when its ends are
+   NOT both upper, both lower or both digit."
+  [entry]
+  (and (vector? entry)
+       (let [[lo hi] entry]
+         (not (or (every? #(Character/isUpperCase ^char %) [lo hi])
+                  (every? #(Character/isLowerCase ^char %) [lo hi])
+                  (every? #(Character/isDigit ^char %)     [lo hi]))))))
+
 (defn- node-demand
   "What ONE node demands, ignoring its children."
   [{:construct/keys [op token entries lazy?]}]
   (cond-> #{}
     (#{:lookahead :negative-lookahead :lookbehind :negative-lookbehind} op) (conj :lookaround)
     (= :atomic op)                                                          (conj :atomic)
+    (= :capture op)                                                         (conj :capture)
     (and lazy? (not= :literal op))                                          (conj :lazy)
     (perl-tokens token)                                                     (conj :perl-class)
-    (some perl-tokens entries)                                              (conj :perl-class)))
+    (some perl-tokens entries)                                              (conj :perl-class)
+    (control-tokens token)                                                  (conj :control-escape)
+    (some control-tokens entries)                                           (conj :control-escape)
+    (some cross-class-range? entries)                                       (conj :collation-range)))
 
 (defn- capabilities-via-walk
   "Independent oracle for `required-capabilities`: flatten the whole construct
@@ -69,7 +87,14 @@
     #:construct{:op :repeat :arg #:construct{:op :literal :text "ab"}
                 :min 2 :max 4 :lazy? false}
 
+    ;; ONE bound is regal's EXACT repeat, `{2}`. It must carry :max, or it is
+    ;; the same value as the unbounded `[:repeat "ab" 2 nil]` below and every
+    ;; emitter renders one of the two wrongly.
     [:repeat "ab" 2]
+    #:construct{:op :repeat :arg #:construct{:op :literal :text "ab"}
+                :min 2 :max 2 :lazy? false}
+
+    [:repeat "ab" 2 nil]
     #:construct{:op :repeat :arg #:construct{:op :literal :text "ab"}
                 :min 2 :lazy? false}
 
@@ -79,6 +104,29 @@
 
     [:*? :word]
     #:construct{:op :* :args [#:construct{:op :token :token :word}] :lazy? true}))
+
+(deftest an-unbounded-repeat-is-not-an-exact-one
+  ;; `[:repeat x 3]` and `[:repeat x 3 nil]` used to normalize to the SAME value
+  ;; — `:construct/max` absent — and `->regal` then projected that value back as
+  ;; the one-bound form, which regal reads as EXACT. Every dialect therefore
+  ;; emitted `{3}` for a construct the schema documents as unbounded.
+  ;;
+  ;; The emission half of this claim lives in dialect-test; this layer owns only
+  ;; normalization and projection.
+  (let [exact     (norm! [:repeat "ab" 3])
+        unbounded (norm! [:repeat "ab" 3 nil])]
+    (testing "normalize keeps them apart"
+      (is (= 3 (:construct/max exact)))
+      (is (not (contains? unbounded :construct/max)))
+      (is (not= exact unbounded)))
+
+    (testing "->regal projects each back to the spelling regal reads the same way"
+      (is (= [:repeat "ab" 3]     (cc/->regal exact)))
+      (is (= [:repeat "ab" 3 nil] (cc/->regal unbounded))))
+
+    (testing "and an absent :max never projects to a bare one-bound form"
+      (is (= 4 (count (cc/->regal unbounded)))
+          "dropping the nil turns unbounded into exact"))))
 
 (deftest lazy-spellings-differ-only-in-lazy?
   (are [greedy lazy op] (and (= false (:construct/lazy? (norm! greedy)))
@@ -165,6 +213,8 @@
   (are [form expected] (= expected (cc/required-capabilities (norm! form)))
     [:cat "a" "b"]            #{}
     [:class [\a \z]]          #{}
+    [:class [\A \Z]]          #{}
+    [:class [\0 \9]]          #{}
     [:+ :any]                 #{}
     [:lookahead "x"]          #{:lookaround}
     [:negative-lookbehind "x"] #{:lookaround}
@@ -173,13 +223,24 @@
     [:lazy-repeat "x" 1 2]    #{:lazy}
     [:+ :digit]               #{:perl-class}
     [:class :whitespace]      #{:perl-class}
-    [:cat [:atomic "a"] [:*? :digit]] #{:atomic :lazy :perl-class}))
+    [:capture "x"]            #{:capture}
+    [:cat :tab "x"]           #{:control-escape}
+    [:class :newline]         #{:control-escape}
+    ;; a range that crosses classes is ordered by locale collation, not by
+    ;; code point — GNU grep rejects [A-a] and mis-answers [0-A]
+    [:class [\A \a]]          #{:collation-range}
+    [:class [\0 \A]]          #{:collation-range}
+    [:not [\A \z]]            #{:collation-range}
+    [:class [\a \z] [\A \Z]]  #{}
+    [:cat [:atomic "a"] [:*? :digit]] #{:atomic :lazy :perl-class}
+    [:capture [:cat :tab :digit]]     #{:capture :control-escape :perl-class}))
 
 (deftest capability-demand-is-collected-from-every-depth
-  (is (= #{:lookaround}
+  (is (= #{:lookaround :capture}
          (cc/required-capabilities
           (norm! [:cat "a" [:alt "b" [:capture [:+ [:lookahead "deep"]]]]])))
-      "a demand nested four levels down must still be seen"))
+      "a demand nested four levels down must still be seen, and the :capture on
+       the way down must not be swallowed by it"))
 
 (st/deftrifecta-from-schema required-capabilities
   hive-system.pattern.construct.core/required-capabilities

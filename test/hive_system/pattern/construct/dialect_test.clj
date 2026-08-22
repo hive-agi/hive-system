@@ -20,10 +20,13 @@
 (def ^:private witness
   "A construct that needs exactly the named capability. Every Capability has
    one — a capability with no witness would make its refusal test vacuous."
-  {:lookaround [:lookahead "x"]
-   :atomic     [:atomic "x"]
-   :lazy       [:*? "x"]
-   :perl-class [:+ :digit]})
+  {:lookaround      [:lookahead "x"]
+   :atomic          [:atomic "x"]
+   :lazy            [:*? "x"]
+   :perl-class      [:+ :digit]
+   :capture         [:capture "x"]
+   :control-escape  [:cat :tab "x"]
+   :collation-range [:class [\A \a]]})
 
 (defn- norm! [form] (:ok (cc/normalize form)))
 
@@ -104,7 +107,8 @@
   (let [res (r/let-ok [c (cc/normalize [:lookahead "x"])] (dial/emit-as :re2 c))]
     (is (= :re2 (:dialect res)))
     (is (= [:lookaround] (vec (:missing res))))
-    (is (= [:lazy :perl-class] (vec (:provides res)))
+    (is (= [:capture :collation-range :control-escape :lazy :perl-class]
+           (vec (:provides res)))
         "a refusal that does not say what IS available is not actionable")))
 
 ;;; =============================================================================
@@ -168,3 +172,22 @@
     :java "a.b*c"                         "a\\.b\\*c"
     :ecma [:cat "a" [:alt "b" "c"]]       "a(?:b|c)"
     :re2  [:*? :word]                     "\\w*?"))
+
+(deftest an-unbounded-repeat-emits-differently-from-an-exact-one
+  ;; The emission half of core-test/an-unbounded-repeat-is-not-an-exact-one.
+  (let [exact     (norm! [:repeat "ab" 3])
+        unbounded (norm! [:repeat "ab" 3 nil])]
+    (are [dialect-id exact-expr unbounded-expr]
+         (and (= exact-expr     (:ok (dial/emit-as dialect-id exact)))
+              (= unbounded-expr (:ok (dial/emit-as dialect-id unbounded))))
+      :java "(?:ab){3}" "(?:ab){3,}"
+      :ecma "(?:ab){3}" "(?:ab){3,}"
+      :re2  "(?:ab){3}" "(?:ab){3,}")
+
+    (testing "and the JVM agrees the two languages differ"
+      (let [e (re-pattern (:ok (dial/emit-as :java exact)))
+            u (re-pattern (:ok (dial/emit-as :java unbounded)))]
+        (is (re-matches e "ababab"))
+        (is (nil? (re-matches e "abababab")) "exact must not accept a fourth")
+        (is (re-matches u "ababab"))
+        (is (re-matches u "abababab") "unbounded must")))))

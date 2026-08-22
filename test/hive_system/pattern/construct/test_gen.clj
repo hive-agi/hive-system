@@ -61,6 +61,11 @@
               (gen/vector (gen/one-of [gen/char-alphanumeric gen-range]) 1 3))]))
 
 (def gen-construct
+  ;; Every `:repeat` drawn here is BOUNDED. An unbounded one composes
+  ;; multiplicatively under nesting, and regal's generator then draws strings
+  ;; long enough to hang a suite on the unlucky seed — an intermittent hang is
+  ;; worse than a shape this corpus does not reach. `{n,}` is covered instead by
+  ;; `core-test/an-unbounded-repeat-is-not-an-exact-one`, deterministically.
   (gen/recursive-gen
    (fn [inner]
      (gen/one-of

@@ -39,22 +39,25 @@
 (def java
   "The JVM's own engine: `java.util.regex`."
   #:dialect{:id :java
-            :capabilities #{:lookaround :atomic :lazy :perl-class}
-            :flavor :java9
-            :doc "java.util.regex — the default engine's dialect."})
+            :capabilities #{:lookaround :atomic :lazy :perl-class :capture
+                            :control-escape :collation-range}
+            :flavor :java
+            :doc "java.util.regex — the engine behind the default IPatternEngine."})
 
 (def ecma
   "JavaScript / ECMAScript. No atomic groups."
   #:dialect{:id :ecma
-            :capabilities #{:lookaround :lazy :perl-class}
+            :capabilities #{:lookaround :lazy :perl-class :capture
+                            :control-escape :collation-range}
             :flavor :ecma
-            :doc "ECMAScript RegExp."})
+            :doc "ECMAScript RegExp — no atomic groups."})
 
 (def re2
   "RE2 and Rust's regex crate — what `rg` and `sd` run. Linear-time by
    construction, which is exactly why it has no lookaround and no backrefs."
   #:dialect{:id :re2
-            :capabilities #{:lazy :perl-class}
+            :capabilities #{:lazy :perl-class :capture :control-escape
+                            :collation-range}
             :flavor :ecma
             :doc "RE2 / Rust regex — the dialect of rg and sd."})
 

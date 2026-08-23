@@ -48,7 +48,7 @@
             [hive-system.pattern.construct.ere]
             [hive-system.pattern.construct.schema :as cs]
             [malli.core :as m]
-            [hive-system.shell.detect :as detect]))
+            [hive-system.shell.binary :as binary]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -67,7 +67,7 @@
   :keyword)
 
 (def Tool
-  "A pattern-taking CLI, as data.
+  "A pattern-taking CLI's GRAMMAR, as data.
 
    :tool/flag           how the pattern is introduced, or nil if it is
                         positional. A flag such as `--regexp` also stops a
@@ -77,23 +77,31 @@
                         all — `grep` reads BRE until `-E` says otherwise. Not
                         derivable from the dialect: it is a fact about this
                         binary's CLI.
-   :tool/bin-alts       other names the SAME program is installed under. Debian
-                        ships fd as `fdfind`, the name `fd` having already gone
-                        to fdclone. A packaging fact, derivable from neither
-                        `:tool/bin` nor the dialect, and the reason an argv can
-                        be perfectly shaped and still unrunnable.
+   :tool/binary         which `shell.binary` identity this tool runs, defaulting
+                        to `:tool/id`. Only needed where the two differ.
+
+   What the program is CALLED is deliberately absent, and the map is CLOSED so
+   that saying it here is a refusal rather than a silently ignored key. That
+   fact — the upstream name and the names a distro renamed it to — belongs to
+   `shell.binary`, which `shell.tools` reads as well; stating it here too is
+   how the fd/fdfind rename came to be a bug in two places at once. Ask `bin`
+   for the canonical name and `executable` for the one installed here.
 
    Where the separator GOES is DERIVED from `:tool/flag` — see `argv`. A field
    declaring it would be a second copy of a decision `:tool/flag` already makes."
-  [:map
+  [:map {:closed true}
    [:tool/id ToolId]
-   [:tool/bin :string]
    [:tool/dialect cs/DialectId]
    [:tool/flag [:maybe :string]]
    [:tool/separator [:maybe :string]]
    [:tool/dialect-flags {:optional true} [:vector :string]]
-   [:tool/bin-alts {:optional true} [:vector :string]]
+   [:tool/binary {:optional true} binary/BinaryId]
    [:tool/doc {:optional true} :string]])
+
+(defn binary-id
+  "The `shell.binary` identity TOOL runs: `:tool/binary`, or its id."
+  [tool]
+  (or (:tool/binary tool) (:tool/id tool)))
 
 ;;; =============================================================================
 ;;; Profiles — behaviour as data
@@ -101,7 +109,7 @@
 
 (def ripgrep
   ;; `--regexp` protects the pattern, so `--` is left to protect the paths.
-  #:tool{:id :rg :bin "rg" :dialect :re2
+  #:tool{:id :rg :dialect :re2
          :flag "--regexp" :separator "--"
          :doc "ripgrep — Rust regex. Linear time, and therefore no lookaround."})
 
@@ -109,7 +117,7 @@
   ;; `sd PATTERN REPLACEMENT [files]` — every operand is positional, the pattern
   ;; included, so the separator has to come before the pattern to protect any of
   ;; them. Measured against sd 1.0.0.
-  #:tool{:id :sd :bin "sd" :dialect :re2
+  #:tool{:id :sd :dialect :re2
          :flag nil :separator "--"
          :doc "sd — Rust regex find-and-replace. Pattern and replacement are both positional."})
 
@@ -120,9 +128,10 @@
   ;; follows the pattern with no second separator.
   ;;
   ;; Debian and Ubuntu install the binary as `fdfind`. The argv shape does not
-  ;; change with the packaging; only argv[0] does, which is why the name is
-  ;; data here and resolved by `executable` rather than assumed by `argv`.
-  #:tool{:id :fd :bin "fd" :bin-alts ["fdfind"] :dialect :re2
+  ;; change with the packaging; only argv[0] does, which is why the names live
+  ;; in `shell.binary` and are resolved by `executable` rather than assumed by
+  ;; `argv`.
+  #:tool{:id :fd :dialect :re2
          :flag nil :separator "--"
          :doc "fd — Rust regex over filenames. Pattern is positional."})
 
@@ -133,7 +142,7 @@
   ;; A PATH `grep` is routinely ugrep or another superset. That is safe in this
   ;; direction only: everything :posix-ere emits, a superset also accepts. It is
   ;; the reason the dialect emits ERE rather than trusting whatever is on PATH.
-  #:tool{:id :grep :bin "grep" :dialect :posix-ere
+  #:tool{:id :grep :dialect :posix-ere
          :flag "-e" :separator "--" :dialect-flags ["-E"]
          :doc "grep -E — POSIX ERE. No \\d, no lazy, no lookaround, no non-capturing group."})
 
@@ -149,12 +158,25 @@
 
 (defn register!
   "Register TOOL under its id, replacing any prior one. Result<Tool>.
-   A profile that does not conform to the Tool schema is refused."
+
+   Refused if the profile does not conform to the Tool schema, or if its
+   binary identity is not registered with `shell.binary` — a tool whose
+   program nobody has named cannot produce an argv, and finding that out at
+   registration beats finding it out at argv[0]."
   [tool]
-  (if (m/validate Tool tool)
+  (cond
+    (not (m/validate Tool tool))
+    (r/err :search/invalid-tool {:tool tool :explain (m/explain Tool tool)})
+
+    (nil? (binary/lookup (binary-id tool)))
+    (r/err :search/unknown-binary
+           {:tool (:tool/id tool)
+            :binary (binary-id tool)
+            :known (vec (keys (binary/canonical)))})
+
+    :else
     (do (swap! tools* assoc (:tool/id tool) tool)
-        (r/ok tool))
-    (r/err :search/invalid-tool {:tool tool :explain (m/explain Tool tool)})))
+        (r/ok tool))))
 
 (defn unregister!
   "Drop the tool registered under ID. Returns it, or nil."
@@ -169,11 +191,21 @@
   @tools*)
 
 (defn tool
-  "Result<Tool> for ID."
+  "Result<Tool> for ID. Grammar only — ask `bin` or `executable` for a name."
   [id]
   (if-let [t (get @tools* id)]
     (r/ok t)
     (r/err :search/unknown-tool {:id id :known (vec (sort (keys @tools*)))})))
+
+(defn bin
+  "Result<string>: the upstream name TOOL-ID's program goes by.
+
+   Resolved through `shell.binary` at CALL time rather than stored on the
+   profile, so a name corrected there reaches every tool already registered
+   instead of being frozen into whatever was true when `register!` ran."
+  [tool-id]
+  (r/let-ok [t (tool tool-id)]
+    (r/ok (binary/bin (binary-id t)))))
 
 (defn register-built-in!
   "Register every built-in profile. Returns the vector of Results."
@@ -232,13 +264,13 @@
        (r/ok (into []
                    cat
                    (if pattern-flag
-                     [[(:tool/bin t)]
+                     [[(binary/bin (binary-id t))]
                       (vec (:tool/dialect-flags t))
                       (vec flags)
                       [pattern-flag expr]
                       (when (and sep (seq operands)) [sep])
                       (vec operands)]
-                     [[(:tool/bin t)]
+                     [[(binary/bin (binary-id t))]
                       (vec (:tool/dialect-flags t))
                       (vec flags)
                       (when sep [sep])
@@ -248,19 +280,22 @@
 (defn executable
   "Result<string>: the name TOOL-ID is actually installed under HERE.
 
-   `:tool/bin` is the canonical name and the one `argv` emits, because an argv
-   is a claim about a program's GRAMMAR and that claim does not change with
+   `bin` is the canonical name and the one `argv` emits, because an argv is a
+   claim about a program's GRAMMAR and that claim does not change with
    packaging. argv[0] does: Debian ships fd as `fdfind`, so the canonical name
    resolves to nothing and the argv `argv` built is correct and unrunnable.
 
-   Tries `:tool/bin` first, then `:tool/bin-alts` in order, and refuses naming
-   every name it tried — rather than letting the caller meet it as an ENOENT
-   from the fork."
+   The names, and the order they are probed in, are `shell.binary`'s. A name
+   that answers is returned; otherwise the refusal names every name it tried,
+   rather than letting the caller meet it as an ENOENT from the fork."
   [tool-id]
   (r/let-ok [t (tool tool-id)]
-    (let [names (into [(:tool/bin t)] (:tool/bin-alts t))]
-      (or (some (fn [n] (when (r/ok? (detect/which n)) (r/ok n))) names)
-          (r/err :search/tool-not-installed {:id tool-id :tried names})))))
+    (let [bid   (binary-id t)
+          names (binary/names bid)
+          found (binary/locate bid)]
+      (if (r/ok? found)
+        (r/ok (:bin (:ok found)))
+        (r/err :search/tool-not-installed {:id tool-id :tried names})))))
 
 (m/=> executable [:=> [:cat :keyword] :any])
 

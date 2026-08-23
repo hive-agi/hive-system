@@ -18,6 +18,7 @@
             [hive-dsl.result :as r]
             [hive-system.pattern.construct.api :as api]
             [hive-system.pattern.construct.dialect :as dial]
+            [hive-system.shell.binary :as binary]
             [hive-system.shell.core :as sh]
             [hive-system.shell.search :as search]))
 
@@ -105,11 +106,41 @@
         "the refusal names the alternatives rather than leaving the caller to guess")))
 
 (deftest an-invalid-profile-is-refused-not-stored
-  (let [res (search/register! #:tool{:id :bogus :bin "bogus" :dialect :re2})]
+  (let [res (search/register! #:tool{:id :bogus :dialect :re2})]
     (is (r/err? res))
     (is (= :search/invalid-tool (:error res)))
     (is (nil? (get (search/registered) :bogus))
         "a profile that failed the schema must not be reachable")))
+
+(deftest a-profile-may-not-restate-the-binary-name
+  ;; The Tool map is CLOSED for this reason alone. An open map would accept
+  ;; `:tool/bin` and then ignore it — the argv would be built from
+  ;; shell.binary regardless — so the profile would say one thing and the
+  ;; command line do another, which is the fd/fdfind divergence rebuilt.
+  (binary/register! #:binary{:id :restater :bin "restater"})
+  (let [res (search/register! #:tool{:id :restater :bin "something-else"
+                                     :dialect :re2 :flag nil :separator "--"})]
+    (is (r/err? res))
+    (is (= :search/invalid-tool (:error res))
+        "naming the binary here is a refusal, not a silently dropped key"))
+  (binary/unregister! :restater))
+
+(deftest a-tool-whose-binary-nobody-declared-is-refused-at-registration
+  ;; A tool that cannot produce an argv[0] is not a tool. Catching it here
+  ;; beats catching it at the fork, and it is what forces the name to be
+  ;; declared in the one place that owns names.
+  (let [profile #:tool{:id :undeclared :dialect :re2 :flag nil :separator "--"}
+        refused (search/register! profile)]
+    (is (r/err? refused))
+    (is (= :search/unknown-binary (:error refused)))
+    (is (= :undeclared (:binary refused)))
+    (is (nil? (get (search/registered) :undeclared)))
+    (testing "and it registers once the identity exists — the gate is the binary, nothing else"
+      (binary/register! #:binary{:id :undeclared :bin "undeclared"})
+      (is (r/ok? (search/register! profile)))
+      (is (= "undeclared" (:ok (search/bin :undeclared))))
+      (search/unregister! :undeclared)
+      (binary/unregister! :undeclared))))
 
 (deftest an-unknown-tool-is-refused-before-the-form-is-even-read
   ;; Ordering matters: resolving the tool first is what lets `argv` report
@@ -217,7 +248,8 @@
 (deftest explain-reads-the-registry-rather-than-a-hardcoded-list
   ;; The whole point of tools-as-data: a tool registered against a dialect that
   ;; DOES have lookaround must show up as runnable, with no edit to `explain`.
-  (search/register! #:tool{:id :jvm-tool :bin "jvm-tool" :dialect :java
+  (binary/register! #:binary{:id :jvm-tool :bin "jvm-tool"})
+  (search/register! #:tool{:id :jvm-tool :dialect :java
                            :flag "--regexp" :separator "--"})
   (let [{:keys [runnable blocked]} (:ok (search/explain [:lookahead "x"]))]
     (is (contains? (set runnable) :jvm-tool))
@@ -373,9 +405,9 @@
       (is (#{"fd" "fdfind"} (:ok res))
           "Debian ships it as fdfind; either is correct here, a third name is not")))
   (testing "an uninstalled tool is refused before the fork, naming every name tried"
-    (search/register! #:tool{:id :nope :bin "hive-no-such-binary"
-                             :bin-alts ["hive-no-such-binary-either"]
-                             :dialect :re2 :flag nil :separator "--"})
+    (binary/register! #:binary{:id :nope :bin "hive-no-such-binary"
+                               :alts ["hive-no-such-binary-either"]})
+    (search/register! #:tool{:id :nope :dialect :re2 :flag nil :separator "--"})
     (let [res (search/executable :nope)]
       (is (r/err? res))
       (is (= :search/tool-not-installed (:error res)))
@@ -398,8 +430,8 @@
   ;; reads the same everywhere, so it must not be masked by a fact about this
   ;; machine. An uninstalled tool asked for an unexpressible construct must
   ;; still report the construct.
-  (search/register! #:tool{:id :nope :bin "hive-no-such-binary"
-                           :dialect :re2 :flag nil :separator "--"})
+  (binary/register! #:binary{:id :nope :bin "hive-no-such-binary"})
+  (search/register! #:tool{:id :nope :dialect :re2 :flag nil :separator "--"})
   (let [res (search/spawn-argv :nope [:lookahead "x"] {})]
     (is (r/err? res))
     (is (= :construct/unsupported (:error res)))

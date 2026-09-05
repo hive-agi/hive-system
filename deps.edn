@@ -6,14 +6,14 @@
         io.github.hive-agi/hive-dsl {:mvn/version "0.5.21"}
 
         ;; Event system (interceptors, effects/coeffects, FSM)
-        io.github.hive-agi/hive-events {:mvn/version "0.5.9"}
+        io.github.hive-agi/hive-events {:mvn/version "0.5.10"}
 
         ;; Ports this system implements — ISigner, so a licence can be signed
         ;; through whichever ICrypto a host has already built.
-        io.github.hive-agi/hive-spi {:mvn/version "0.2.0"}
+        io.github.hive-agi/hive-spi {:mvn/version "1.0.0"}
 
         ;; Bounded parallel execution (pmap, fork-join, gate)
-        io.github.hive-agi/hive-weave {:mvn/version "0.3.5"}
+        io.github.hive-agi/hive-weave {:mvn/version "0.3.6"}
 
         ;; Filesystem utilities (which, glob, exists?, list-dir, etc.)
         babashka/fs {:mvn/version "0.5.34"}
@@ -51,6 +51,6 @@
                       io.github.cognitect-labs/test-runner
                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}
                       io.github.hive-agi/hive-test
-                      {:mvn/version "0.3.17"}
+                      {:mvn/version "0.4.0"}
                       io.github.hive-agi/hive-schemas {:mvn/version "0.1.29"}}
          :main-opts ["-m" "cognitect.test-runner"]}}}

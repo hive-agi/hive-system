@@ -1,19 +1,19 @@
 {:paths ["src" "resources"]
- :deps {org.clojure/clojure {:mvn/version "1.12.5"}
+ :deps {org.clojure/clojure {:mvn/version "1.12.6"}
         org.clojure/core.async {:mvn/version "1.9.865"}
 
         ;; Result ADT + DSL macros (railway-oriented programming)
-        io.github.hive-agi/hive-dsl {:mvn/version "0.5.24"}
+        io.github.hive-agi/hive-dsl {:mvn/version "0.5.27"}
 
         ;; Event system (interceptors, effects/coeffects, FSM)
-        io.github.hive-agi/hive-events {:mvn/version "0.5.13"}
+        io.github.hive-agi/hive-events {:mvn/version "0.5.14"}
 
         ;; Ports this system implements — ISigner, so a licence can be signed
         ;; through whichever ICrypto a host has already built.
-        io.github.hive-agi/hive-spi {:mvn/version "1.1.0"}
+        io.github.hive-agi/hive-spi {:mvn/version "1.1.1"}
 
         ;; Bounded parallel execution (pmap, fork-join, gate)
-        io.github.hive-agi/hive-weave {:mvn/version "0.3.9"}
+        io.github.hive-agi/hive-weave {:mvn/version "0.3.12"}
 
         ;; Filesystem utilities (which, glob, exists?, list-dir, etc.)
         babashka/fs {:mvn/version "0.5.34"}
@@ -40,7 +40,7 @@
         lambdaisland/regal {:mvn/version "0.1.175"}}
 
  :aliases
- {:build {:deps {io.github.hive-agi/hive-build {:mvn/version "0.1.15"}}
+ {:build {:deps {io.github.hive-agi/hive-build {:mvn/version "0.1.17"}}
           :ns-default hive-build.api}
 
   :dev {:extra-paths ["dev" "test"]
@@ -51,6 +51,6 @@
                       io.github.cognitect-labs/test-runner
                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}
                       io.github.hive-agi/hive-test
-                      {:mvn/version "0.4.4"}
-                      io.github.hive-agi/hive-schemas {:mvn/version "0.1.32"}}
+                      {:mvn/version "0.4.5"}
+                      io.github.hive-agi/hive-schemas {:mvn/version "0.1.34"}}
          :main-opts ["-m" "cognitect.test-runner"]}}}

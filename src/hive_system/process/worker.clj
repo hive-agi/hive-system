@@ -7,10 +7,10 @@
             [hive-system.process.core :as proc]
             [hive-system.process.liveness :as liveness]
             [hive-dsl.result :as r]
-            [hive-weave.safe :as safe]
             [hive-weave.gate :as gate]
             [clojure.java.io :as io]
-            [clojure.edn :as edn]))
+            [clojure.edn :as edn]
+            [hive-weave.pool :as wp]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -25,46 +25,93 @@
   (when-let [line (.readLine r)]
     (edn/read-string line)))
 
-(defrecord Worker [handle writer reader id-counter call-gate]
+(defn- stale?
+  "True when `frame` answers an earlier call than `id`. A frame without :id is
+   from a worker that does not echo the correlation key, so it can only be read
+   as the reply to the call in flight."
+  [frame id]
+  (and (map? frame)
+       (contains? frame :id)
+       (not= id (:id frame))))
+
+(defn- pending-read!
+  "The worker's outstanding read, starting one on its single read thread when
+   none is in flight.
+
+   A read the caller abandoned on timeout stays here rather than being replaced:
+   the reader thread is still parked in readLine, and a second reader would take
+   the NEXT frame, so the abandoned call's reply would be delivered to the
+   following call. One reader, one pending future, per worker."
+  [{:keys [read-pool pending reader]}]
+  (or @pending
+      (let [fut (wp/submit! read-pool (fn [] (read-frame reader)))]
+        (reset! pending fut)
+        fut)))
+
+(defn- await-frame
+  "Collect frames until the reply for `id` arrives or `deadline` passes.
+
+   A frame carrying a different :id answers a call that already timed out, so it
+   is discarded rather than returned: that correlation is the whole point of
+   stamping :id on the request."
+  [{:keys [pending handle] :as worker} id deadline]
+  (loop []
+    (let [remaining (- deadline (System/currentTimeMillis))]
+      (if-not (pos? remaining)
+        (r/err :worker/timeout {:id id :pid (:pid handle)})
+        (let [frame (deref (pending-read! worker) remaining ::pending)]
+          (cond
+            (= ::pending frame) (r/err :worker/timeout {:id id :pid (:pid handle)})
+            :else (do (reset! pending nil)
+                      (cond
+                        (nil? frame) (r/err :worker/eof {:pid (:pid handle)})
+                        (stale? frame id) (recur)
+                        :else (r/ok frame)))))))))
+
+(defrecord Worker [handle writer reader id-counter call-gate read-pool pending]
   proto/IWorker
-  (worker-call! [_ request timeout-ms]
+  (worker-call! [this request timeout-ms]
     (let [task (fn []
                  (let [id (swap! id-counter inc)]
                    (send-frame! writer (assoc request :id id))
-                   (safe/safe-future-call {:timeout-ms timeout-ms :name "worker-read"}
-                                          (fn [] (read-frame reader)))))
+                   (await-frame this id (+ (System/currentTimeMillis) timeout-ms))))
           gated (gate/gate-run call-gate task)]
-      (if (r/err? gated)
-        gated
-        (let [read-res (:ok gated)]
-          (cond
-            (r/err? read-res)     read-res
-            (nil? (:ok read-res)) (r/err :worker/eof {:pid (:pid handle)})
-            :else                 (r/ok (:ok read-res)))))))
+      (if (r/err? gated) gated (:ok gated))))
 
   (worker-health [_]
     (r/ok {:pid (:pid handle) :alive? (liveness/alive? (:pid handle))}))
 
   (worker-stop! [_]
-    (proc/signal! handle :tree)))
+    (let [stopped (proc/signal! handle :tree)]
+      (wp/shutdown! read-pool {:await-ms 100})
+      stopped)))
 
 (defn spawn-warm!
   "Spawn a warm worker over cmd (string or arg vector). The process reads
    newline-delimited EDN requests on stdin and writes one EDN response line per
-   request. Returns Result with an IWorker. Opts: :dir, :env."
+   request, echoing the injected :id. Returns Result with an IWorker.
+   Opts: :dir, :env."
   ([cmd] (spawn-warm! cmd {}))
   ([cmd opts]
    (let [spawned (proc/spawn! cmd opts)]
      (if (r/err? spawned)
        spawned
-       (let [handle (:ok spawned)]
+       (let [handle (:ok spawned)
+             pid    (:pid handle)]
          (r/ok (->Worker handle
                          (io/writer (:stdin handle))
                          (io/reader (:stdout handle))
                          (atom 0)
-                         (gate/gate {:name (str "warm-worker-" (:pid handle))
+                         (gate/gate {:name (str "warm-worker-" pid)
                                      :permits 1
-                                     :timeout-ms 60000}))))))))
+                                     :timeout-ms 60000})
+                         ;; one reader thread per worker: reads are serialized by
+                         ;; the call gate, and a second thread would race the
+                         ;; abandoned one for the next frame
+                         (wp/make-pool {:name (str "warm-worker-read-" pid)
+                                        :size 1
+                                        :queue-capacity 1})
+                         (atom nil))))))))
 
 ;; --- Convenience API ---
 

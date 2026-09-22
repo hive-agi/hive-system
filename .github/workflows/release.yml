@@ -30,6 +30,32 @@ jobs:
         with:
           cli: latest
 
+      # The search and :re2 suites drive rg, fd and sd as real processes on
+      # purpose: they exist to claim what those parsers accept, and a skip
+      # would report that claim as green without having checked it. The runner
+      # ships none of them, so `which` returned :shell/not-found and 41 tests
+      # failed for the environment rather than for the code. Installing them
+      # here is the fix. Tagging the suites ^:integration would be deleting the
+      # evidence.
+      - name: Install the binaries the search suites drive
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ripgrep fd-find
+          # Debian renames fd to fdfind (name clash with fdclone). The binary
+          # registry probes "fd" first and "fdfind" second, so either name
+          # resolves; the symlink keeps the argv identical to a dev machine.
+          sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd
+          # sd is not in every runner image's apt index, so it comes from a
+          # pinned release rather than whatever the distro happens to carry.
+          SD_VER=v1.1.0
+          mkdir -p /tmp/sd-dl
+          curl -fsSL "https://github.com/chmln/sd/releases/download/${SD_VER}/sd-${SD_VER}-x86_64-unknown-linux-musl.tar.gz" \
+            | tar -xz -C /tmp/sd-dl
+          sudo install -m 0755 "$(find /tmp/sd-dl -name sd -type f | head -n1)" /usr/local/bin/sd
+          # Loud here, rather than as 41 opaque test failures later.
+          rg --version && fd --version && sd --version
+
       # A published pom is immutable, so the suite runs BEFORE anything
       # is minted. Without this step a red push straight to main still
       # deploys, and the bad version can never be replaced.

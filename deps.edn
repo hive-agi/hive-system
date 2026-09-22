@@ -13,7 +13,7 @@
         io.github.hive-agi/hive-spi {:mvn/version "1.3.0"}
 
         ;; Bounded parallel execution (pmap, fork-join, gate)
-        io.github.hive-agi/hive-weave {:mvn/version "0.3.16"}
+        io.github.hive-agi/hive-weave {:mvn/version "0.4.0"}
 
         ;; Filesystem utilities (which, glob, exists?, list-dir, etc.)
         babashka/fs {:mvn/version "0.5.34"}

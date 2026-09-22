@@ -1,21 +1,45 @@
 (ns hive-system.shell.detect-test
   "Tests for package manager detection and binary resolution.
-   Golden tests lock down detection behavior on this host.
-   Property tests verify which always returns valid Results."
+
+   Detection is asserted as a RULE, not as an inventory: a manager is reported
+   exactly when its binary resolves on PATH. Property tests verify which
+   always returns valid Results."
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.test.check.generators :as gen]
-            [hive-test.golden :refer [deftest-golden]]
             [hive-test.properties :refer [defprop-total defprop-complement]]
             [hive-dsl.result :as r]
             [hive-system.shell.detect :as detect]))
 
 ;; =============================================================================
-;; Golden: Lock down detected package managers on this host
+;; Detection agrees with PATH, on any host
 ;; =============================================================================
 
-(deftest-golden detected-pkg-managers
-  "test/golden/detect/pkg-managers.edn"
-  (set (keys (detect/detect-pkg-managers))))
+(deftest detection-reports-only-managers-it-knows
+  ;; This was a golden over `(set (keys (detect-pkg-managers)))`, which froze
+  ;; the inventory of ONE developer's laptop: #{:cargo :apt :conda :pip :brew
+  ;; :npm}. No CI runner has brew, so the test could not pass anywhere else,
+  ;; and it was the last thing standing between this library and a release.
+  ;;
+  ;; A golden can only lock something that does not depend on the host. What
+  ;; does not depend on the host here is the RULE: detection reports a manager
+  ;; exactly when its binary resolves on PATH, and never reports one it does
+  ;; not declare. That holds on the laptop, on the runner, and in a container
+  ;; with nothing installed at all.
+  (let [known @#'detect/pkg-manager-binaries
+        found (detect/detect-pkg-managers)]
+    (testing "every reported manager is declared, resolves, and agrees on its path"
+      (doseq [[mgr path] found]
+        (is (contains? known mgr)
+            (str mgr " was reported but this namespace does not declare it"))
+        (let [res (detect/which (get known mgr))]
+          (is (r/ok? res)
+              (str mgr " was reported but " (get known mgr) " does not resolve"))
+          (is (= path (get-in res [:ok :path]))
+              (str mgr " was reported at a path `which` does not agree with")))))
+    (testing "every manager left out really is absent"
+      (doseq [[mgr bin] (apply dissoc known (keys found))]
+        (is (r/err? (detect/which bin))
+            (str mgr " resolves on PATH but detection did not report it"))))))
 
 ;; =============================================================================
 ;; Unit: which returns correct Result shape

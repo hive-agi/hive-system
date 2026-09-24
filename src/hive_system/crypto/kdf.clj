@@ -3,6 +3,11 @@
    `crypto-derive-key` returns byte-identical bytes regardless of which
    adapter resolves the call.
 
+   Public surface: `hkdf-sha256` (extract-then-expand) and its two RFC
+   steps, `hkdf-extract` (§2.2) and `hkdf-expand` (§2.3). The steps are
+   public because callers pin them to the RFC 5869 Appendix A vectors,
+   which state the intermediate PRK as well as the OKM.
+
    Composed from `javax.crypto.Mac` HMAC-SHA256 — no native dependency."
   (:import (javax.crypto Mac)
            (javax.crypto.spec SecretKeySpec)))
@@ -15,10 +20,14 @@
     (.init mac (SecretKeySpec. k "HmacSHA256"))
     (.doFinal mac m)))
 
-(defn- hkdf-extract
+(defn hkdf-extract
   "RFC 5869 §2.2 — PRK = HMAC-SHA256(salt, IKM).
    nil or zero-length salt ⇒ HashLen zero bytes (RFC 5869 default).
-   HMAC-SHA256 rejects empty keys outright, so we substitute the default."
+   HMAC-SHA256 rejects empty keys outright, so we substitute the default.
+
+   Public so a caller can check the intermediate PRK against the RFC 5869
+   Appendix A vectors, and can expand one PRK into several OKMs with
+   `hkdf-expand` without extracting again."
   ^bytes [salt ikm]
   (let [salt (if (or (nil? salt) (zero? (alength ^bytes salt)))
                (byte-array HASH_LEN)
@@ -26,9 +35,14 @@
         ikm  (or ikm (byte-array 0))]
     (hmac-sha256 salt ikm)))
 
-(defn- hkdf-expand
-  "RFC 5869 §2.3 — OKM expansion. length ≤ 255 * HashLen."
+(defn hkdf-expand
+  "RFC 5869 §2.3 — OKM expansion. length ≤ 255 * HashLen.
+   `prk` is a pseudorandom key of at least HashLen bytes, normally the
+   output of `hkdf-extract`; a shorter one is rejected, as the RFC requires."
   ^bytes [^bytes prk info ^long length]
+  (when (or (nil? prk) (< (alength prk) HASH_LEN))
+    (throw (ex-info "HKDF PRK shorter than HashLen"
+                    {:prk-length (some-> prk alength) :min HASH_LEN})))
   (when (> length MAX_LENGTH)
     (throw (ex-info "HKDF length exceeds 255*HashLen"
                     {:length length :max MAX_LENGTH})))

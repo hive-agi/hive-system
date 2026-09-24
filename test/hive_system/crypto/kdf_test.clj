@@ -27,6 +27,8 @@
    :salt   (hex->bytes "000102030405060708090a0b0c")
    :info   (hex->bytes "f0f1f2f3f4f5f6f7f8f9")
    :length 42
+   :prk    (hex->bytes (str "077709362c2e32df0ddc3f0dc47bba63"
+                            "90b6c73bb50f9c3122ec844ad7c2b3e5"))
    :okm    (hex->bytes (str "3cb25f25faacd57a90434f64d0362f2a"
                             "2d2d0a90cf1a5a4c5db02d56ecc4c5bf"
                             "34007208d5b887185865"))})
@@ -49,6 +51,8 @@
                             "e0e1e2e3e4e5e6e7e8e9eaebecedeeef"
                             "f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"))
    :length 82
+   :prk    (hex->bytes (str "06a6b88c5853361a06104c9ceb35b45c"
+                            "ef760014904671014a193f40c15fc244"))
    :okm    (hex->bytes (str "b11e398dc80327a1c8e7f78c596a4934"
                             "4f012eda2d4efad8a050cc4c19afa97c"
                             "59045a99cac7827271cb41c65e590e09"
@@ -62,6 +66,8 @@
    :salt   nil
    :info   nil
    :length 42
+   :prk    (hex->bytes (str "19ef24a32c717b167f33a91d6f648bdf"
+                            "96596776afdb6377ac434c1c293ccb04"))
    :okm    (hex->bytes (str "8da4e775a563c18f715f802a063c5a31"
                             "b8a11f5c5ee1879ec3454e5f3c738d2d"
                             "9d201395faa4b61a96c8"))})
@@ -78,6 +84,37 @@
     (testing "TC1 (basic)"           (assert-kat-pure rfc-tc1))
     (testing "TC2 (longer)"          (assert-kat-pure rfc-tc2))
     (testing "TC3 (empty salt+info)" (assert-kat-pure rfc-tc3))))
+
+(defn- assert-kat-steps [tc]
+  (let [{:keys [ikm salt info length prk okm]} tc
+        out-prk (kdf/hkdf-extract salt ikm)
+        out-okm (kdf/hkdf-expand out-prk info length)]
+    (is (Arrays/equals ^bytes out-prk ^bytes prk)
+        (str "RFC 5869 PRK mismatch — expected "
+             (bytes->hex prk) " got " (bytes->hex out-prk)))
+    (is (Arrays/equals ^bytes out-okm ^bytes okm)
+        (str "RFC 5869 OKM mismatch — expected "
+             (bytes->hex okm) " got " (bytes->hex out-okm)))))
+
+;; The two RFC steps are public API: consumers (General's zk-crypto KAT suite)
+;; pin the intermediate PRK to the Appendix A vectors. This test is also their
+;; in-repo caller, so an unused-public-var sweep cannot privatize them again.
+(deftest hkdf-extract-then-expand-rfc-5869
+  (testing "extract yields the RFC PRK, expand of that PRK yields the RFC OKM"
+    (testing "TC1 (basic)"           (assert-kat-steps rfc-tc1))
+    (testing "TC2 (longer)"          (assert-kat-steps rfc-tc2))
+    (testing "TC3 (empty salt+info)" (assert-kat-steps rfc-tc3))))
+
+(deftest hkdf-expand-rejects-bad-input
+  (testing "a PRK shorter than HashLen"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"shorter than HashLen"
+          (kdf/hkdf-expand (byte-array 16) nil 32))))
+  (testing "a nil PRK"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"shorter than HashLen"
+          (kdf/hkdf-expand nil nil 32))))
+  (testing "length over 255*HashLen"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"exceeds 255\*HashLen"
+          (kdf/hkdf-expand (byte-array 32) nil (inc kdf/MAX_LENGTH))))))
 
 (defn- assert-kat-adapter [adapter tc]
   (let [{:keys [ikm salt info length okm]} tc

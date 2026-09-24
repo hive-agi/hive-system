@@ -23,11 +23,12 @@
 (defn- build-process
   "Construct a ProcessBuilder from command and opts.
 
-  stdin redirects from /dev/null by default: exec! never writes to a child's
-  stdin, and an inherited open pipe makes stdin-sniffing CLIs (nuclei reads
-  targets from a piped stdin) block forever. :inherit-io? keeps the
-  terminal's stdin instead; :stdin <File/path> overrides explicitly."
-  ^ProcessBuilder [cmd {:keys [dir env inherit-io? redirect-err? stdin]}]
+  stdin redirects from /dev/null by default: an inherited open pipe makes
+  stdin-sniffing CLIs (nuclei reads targets from a piped stdin) block
+  forever. :inherit-io? keeps the terminal's stdin instead; :stdin
+  <File/path> overrides explicitly; :in leaves stdin a pipe, which the
+  caller feeds (see `feed-stdin!`)."
+  ^ProcessBuilder [cmd {:keys [dir env inherit-io? redirect-err? stdin in]}]
   (let [cmd-vec (if (string? cmd) ["sh" "-c" cmd] (vec cmd))
         pb (ProcessBuilder. ^java.util.List cmd-vec)]
     (when dir (.directory pb (java.io.File. (str dir))))
@@ -35,13 +36,29 @@
       (let [penv (.environment pb)]
         (doseq [[k v] env]
           (.put penv (str k) (str v)))))
-    (if inherit-io?
-      (.inheritIO pb)
-      (.redirectInput pb (ProcessBuilder$Redirect/from
-                          (java.io.File. (str (or stdin "/dev/null"))))))
+    (cond
+      inherit-io? (.inheritIO pb)
+      (some? in)  nil
+      :else       (.redirectInput pb (ProcessBuilder$Redirect/from
+                                      (java.io.File. (str (or stdin "/dev/null"))))))
     (when redirect-err?
       (.redirectErrorStream pb true))
     pb))
+
+(defn- feed-stdin!
+  "Write `in` (a String, sent as UTF-8, or bytes) to `proc`'s stdin on its
+   own thread, then close it. Never on the caller's thread: a child that
+   writes a lot before it reads would otherwise fill its output pipe and
+   deadlock both. A child that exits without reading closes the pipe; that
+   IOException is its answer, not a fault. `in` never reaches a result, a
+   log line or an error: it is how a caller hands a secret to a child
+   without putting it on disk or argv."
+  [^Process proc in]
+  (when (some? in)
+    (let [^bytes b (if (string? in) (.getBytes ^String in "UTF-8") in)]
+      (future
+        (try (with-open [w (.getOutputStream proc)] (.write w b))
+             (catch java.io.IOException _ nil))))))
 
 (defrecord Shell [default-opts]
   proto/IShell
@@ -56,6 +73,7 @@
           ran        (try-effect* :shell/exec-failed
                        (let [pb        (build-process cmd opts)
                              proc      (.start pb)
+                             _         (feed-stdin! proc (:in opts))
                              stdout-p  (streams/drain (.getInputStream proc))
                              stderr-p  (streams/drain (.getErrorStream proc))
                              finished? (.waitFor proc (long timeout-ms) TimeUnit/MILLISECONDS)]
@@ -105,7 +123,8 @@
           start      (System/nanoTime)
           elapsed    #(/ (- (System/nanoTime) start) 1e6)
           ran        (try-effect* :shell/exec-failed
-                       (let [proc (.start (build-process cmd opts))]
+                       (let [proc (.start (build-process cmd opts))
+                             _    (feed-stdin! proc (:in opts))]
                          {:proc     proc
                           ;; both reads are abandonable: the cap may fire long
                           ;; before EOF, and EOF may never come at all while a
@@ -170,7 +189,11 @@
    Opts:
      :dir        — working directory
      :env        — extra env vars map
-     :timeout-ms — kill after N ms (default 30s)"
+     :timeout-ms — kill after N ms (default 30s)
+     :in         — a String (sent as UTF-8) or bytes written to the child's
+                   stdin, then closed. Never part of any result or error, so
+                   it is how a secret reaches a child (gpg) without touching
+                   disk or argv. Without it stdin is /dev/null."
   ([cmd] (exec! cmd {}))
   ([cmd opts] (proto/shell-exec! @default-shell cmd opts)))
 

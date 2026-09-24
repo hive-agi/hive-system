@@ -34,6 +34,31 @@
       (is (= "" (get-in result [:ok :stderr])))
       (is (number? (get-in result [:ok :duration-ms]))))))
 
+(deftest exec-feeds-stdin-from-memory
+  (testing ":in reaches the child's stdin, as a String or as bytes"
+    (is (= "secret line\nsecond ✓" (get-in (sh/exec! ["cat"] {:in "secret line\nsecond ✓"}) [:ok :stdout])))
+    (is (= "raw" (get-in (sh/exec! ["cat"] {:in (.getBytes "raw" "UTF-8")}) [:ok :stdout]))))
+  (testing ":in never appears in a result"
+    (let [marker (str "IN-MARKER-" (random-uuid))
+          ok     (sh/exec! ["sh" "-c" "cat >/dev/null; echo done"] {:in marker})
+          late   (sh/exec! ["sleep" "5"] {:in marker :timeout-ms 200})]
+      (is (= "done\n" (get-in ok [:ok :stdout])))
+      (is (not (clojure.string/includes? (pr-str ok) marker)))
+      (is (= :shell/timeout (:error late)))
+      (is (not (clojure.string/includes? (pr-str late) marker)))))
+  (testing "a child that never reads stdin does not hang the call"
+    (is (= "ok\n" (get-in (sh/exec! ["echo" "ok"] {:in (apply str (repeat 1000000 "x")) :timeout-ms 10000})
+                          [:ok :stdout]))))
+  (testing "a child that writes a lot before reading does not deadlock"
+    (let [res (sh/exec! ["sh" "-c" "head -c 2000000 /dev/zero | tr '\\0' 'y'; cat >/dev/null; echo end"]
+                        {:in (apply str (repeat 2000000 "z")) :timeout-ms 20000})]
+      (is (r/ok? res))
+      (is (clojure.string/ends-with? (get-in res [:ok :stdout]) "end\n"))))
+  (testing "without :in, stdin is still /dev/null"
+    (is (= "" (get-in (sh/exec! ["cat"] {:timeout-ms 5000}) [:ok :stdout]))))
+  (testing "lines! takes :in too"
+    (is (= ["a" "b"] (get-in (sh/lines! ["cat"] {:in "a\nb\n"}) [:ok :lines])))))
+
 (deftest exec-failure
   (testing "exec! returns ok even on non-zero exit (exit code in value)"
     (let [result (sh/exec! "exit 42")]

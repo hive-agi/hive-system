@@ -19,7 +19,7 @@
         babashka/fs {:mvn/version "0.5.34"}
 
         ;; Datahike — Clojure-native Datalog database (temporal storage)
-        org.replikativ/datahike {:mvn/version "0.8.1895"}
+        org.replikativ/datahike {:mvn/version "0.8.1899"}
 
         ;; Logging
         com.taoensso/timbre {:mvn/version "6.8.0"}
@@ -34,7 +34,7 @@
         caesium/caesium {:mvn/version "0.15.0"}
 
         ;; Value objects + contracts (malli is the single source: m/=> + tests)
-        metosin/malli {:mvn/version "0.20.1"}
+        metosin/malli {:mvn/version "0.20.2"}
 
         ;; Regex-as-data: the construct language for hive-system.pattern.construct
         lambdaisland/regal {:mvn/version "0.1.175"}}

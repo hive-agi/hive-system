@@ -68,6 +68,25 @@ jobs:
           </server></servers></settings>
           EOF
 
+      - name: Install the binaries the search suites drive
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ripgrep fd-find
+          # Debian renames fd to fdfind (name clash with fdclone). The binary
+          # registry probes "fd" first and "fdfind" second, so either name
+          # resolves; the symlink keeps the argv identical to a dev machine.
+          sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd
+          # sd is not in every runner image's apt index, so it comes from a
+          # pinned release rather than whatever the distro happens to carry.
+          SD_VER=v1.1.0
+          mkdir -p /tmp/sd-dl
+          curl -fsSL "https://github.com/chmln/sd/releases/download/${SD_VER}/sd-${SD_VER}-x86_64-unknown-linux-musl.tar.gz" \
+            | tar -xz -C /tmp/sd-dl
+          sudo install -m 0755 "$(find /tmp/sd-dl -name sd -type f | head -n1)" /usr/local/bin/sd
+          # Loud here, rather than as 41 opaque test failures later.
+          rg --version && fd --version && sd --version
+
       # The pins must resolve from the registries before anything else is
       # worth running: this is the step a dependency sweep can break.
       - name: Resolve declared classpath

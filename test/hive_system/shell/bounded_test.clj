@@ -191,12 +191,28 @@
   (testing "empty input is complete, not truncated"
     (is (= {:lines [] :truncated? false :reason :eof} (rlc "" 5 1000)))))
 
+(deftest a-line-is-what-readline-returns
+  ;; The cases the old generative model got wrong, pinned: it joined lines with
+  ;; \n and no final terminator, and allowed \r inside a line.
+  (testing "an empty line in the middle or at the end is a line"
+    (is (= ["a" ""] (:lines (rlc "a\n\n" 5 1000))))
+    (is (= [""] (:lines (rlc "\n" 5 1000)))))
+  (testing "a source with no trailing newline loses no line, and a missing one adds none"
+    (is (= ["a" "b"] (:lines (rlc "a\nb" 5 1000))))
+    (is (= [] (:lines (rlc "" 5 1000)))))
+  (testing "\\r ends a line, alone or before \\n"
+    (is (= ["a" "b"] (:lines (rlc "a\rb\n" 5 1000))))
+    (is (= ["a" "b"] (:lines (rlc "a\r\nb\r\n" 5 1000))))))
+
 (defspec the-reader-is-total-and-never-exceeds-its-budget 100
-  (prop/for-all [ls    (gen/vector (gen/such-that #(not (str/includes? % "\n"))
+  ;; A line is what BufferedReader.readLine returns: it holds neither \n nor \r
+  ;; (both terminate it), and each one is newline-terminated in the source, so
+  ;; an empty line is a line rather than a missing one.
+  (prop/for-all [ls    (gen/vector (gen/such-that #(not-any? #{\newline \return} %)
                                                   gen/string-ascii)
                                    0 30)
                  limit (gen/choose 0 30)]
-    (let [{:keys [lines truncated? reason]} (rlc (str/join "\n" ls) limit 1000000)]
+    (let [{:keys [lines truncated? reason]} (rlc (apply str (map #(str % "\n") ls)) limit 1000000)]
       (and (<= (count lines) limit)
            (= lines (vec (take (count lines) ls)))
            (contains? #{:eof :max-lines :max-bytes} reason)

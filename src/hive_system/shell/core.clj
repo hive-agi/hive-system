@@ -20,6 +20,17 @@
 ;;
 ;; SPDX-License-Identifier: MIT
 
+(def capabilities
+  "What the ProcessBuilder adapter honours — the same keys as
+   `hive-system.shell.sh/capabilities`, so a caller (or a conformance
+   suite) picks an adapter by data rather than by reading its source."
+  {:timeout?      true
+   :stdin-file?   true
+   :inherit-io?   true
+   :redirect-err? true
+   :stdin-bytes?  true
+   :env-merge?    true})
+
 (defn- build-process
   "Construct a ProcessBuilder from command and opts.
 

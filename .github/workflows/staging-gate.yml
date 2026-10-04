@@ -1,0 +1,112 @@
+name: staging-gate
+
+# staging is a GATE, not a mirror: a push to staging runs the suite against the
+# DECLARED classpath (no local.deps.edn), and only a green staging is promoted
+# to main, where release.yml mints the version. This workflow never publishes.
+#
+# Runs unchanged on GitHub Actions and Gitea Actions: the Clojure CLI comes from
+# the official installer, not DeLaGuardo/setup-clojure, whose GitHub API call
+# fails under Gitea's GITHUB_TOKEN.
+#
+# Secrets (optional): MAVEN_USERNAME, MAVEN_TOKEN, for deps served only by the
+# private hive-gitea registry.
+
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:
+
+concurrency:
+  group: staging-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MAVEN_USERNAME: ${{ secrets.MAVEN_USERNAME }}
+      MAVEN_TOKEN: ${{ secrets.MAVEN_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Clojure CLI
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/clj-install.sh \
+            https://download.clojure.org/install/linux-install-1.12.4.1618.sh
+          chmod +x /tmp/clj-install.sh
+          sudo /tmp/clj-install.sh
+          clojure --version
+
+      - name: Private-registry credentials
+        if: env.MAVEN_TOKEN != ''
+        run: |
+          CLJ_CONFIG="${CLJ_CONFIG:-${XDG_CONFIG_HOME:+$XDG_CONFIG_HOME/clojure}}"
+          CLJ_CONFIG="${CLJ_CONFIG:-$HOME/.clojure}"
+          mkdir -p "$CLJ_CONFIG" "$HOME/.m2"
+          cat > "$CLJ_CONFIG/deps.edn" <<'EOF'
+          {:mvn/repos {"hive-gitea" {:url "https://gitea.hive-mcp.com/api/packages/hive-agi/maven"}}}
+          EOF
+          cat > "$HOME/.m2/settings.xml" <<EOF
+          <settings><servers><server>
+            <id>hive-gitea</id>
+            <username>${MAVEN_USERNAME}</username>
+            <password>${MAVEN_TOKEN}</password>
+          </server></servers></settings>
+          EOF
+
+      - name: Install the binaries the search suites drive
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ripgrep fd-find
+          # Debian renames fd to fdfind (name clash with fdclone). The binary
+          # registry probes "fd" first and "fdfind" second, so either name
+          # resolves; the symlink keeps the argv identical to a dev machine.
+          sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd
+          # sd is not in every runner image's apt index, so it comes from a
+          # pinned release rather than whatever the distro happens to carry.
+          SD_VER=v1.1.0
+          mkdir -p /tmp/sd-dl
+          curl -fsSL "https://github.com/chmln/sd/releases/download/${SD_VER}/sd-${SD_VER}-x86_64-unknown-linux-musl.tar.gz" \
+            | tar -xz -C /tmp/sd-dl
+          sudo install -m 0755 "$(find /tmp/sd-dl -name sd -type f | head -n1)" /usr/local/bin/sd
+          # Loud here, rather than as 41 opaque test failures later.
+          rg --version && fd --version && sd --version
+
+      # The pins must resolve from the registries before anything else is
+      # worth running: this is the step a dependency sweep can break.
+      - name: Resolve declared classpath
+        run: clojure -P
+
+      - name: Test
+        run: |
+          set -euo pipefail
+          mode=$(clojure -M -e '(let [a (get-in (clojure.edn/read-string (slurp "deps.edn")) [:aliases :test])] (print (cond (:main-opts a) "main" (:exec-fn a) "exec" a "paths" :else "none")))')
+          case "$mode" in
+            main) clojure -M:test ;;
+            exec) clojure -X:test ;;
+            # A :test alias that only adds paths: run it under cognitect's runner.
+            paths) clojure -Sdeps '{:deps {io.github.cognitect-labs/test-runner {:git/tag "v0.5.1" :git/sha "dfb30dd"}}}' -M:test -m cognitect.test-runner ;;
+            *)
+              if [ -f bb.edn ] && grep -qE '^\s*test\s' bb.edn; then
+                curl -fsSL -o /tmp/bb-install https://raw.githubusercontent.com/babashka/babashka/master/install
+                sudo bash /tmp/bb-install
+                bb test
+              else
+                echo "no runnable :test alias or bb test task; declared classpath resolved"
+              fi ;;
+          esac

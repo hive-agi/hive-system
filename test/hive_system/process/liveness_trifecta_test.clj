@@ -13,7 +13,8 @@
             [clojure.test.check.properties :as prop]
             [clojure.test.check.clojure-test :refer [defspec]]
             [hive-system.process.liveness :as L]
-            [hive-test.trifecta :refer [deftrifecta]])
+            [hive-test.trifecta :refer [deftrifecta]]
+            [hive-dsl.swarm-status])
   (:import [java.lang ProcessHandle]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -67,6 +68,26 @@
 (defspec liveness-closed-set 300
   (prop/for-all [pid gen-pid-input]
                 (contains? liveness-variants (variant pid))))
+
+;; =============================================================================
+;; Trifecta — one declaration of the sum (card 20260828232142-69a7e2e8)
+;; =============================================================================
+
+(deftrifecta liveness-signal-is-hive-dsl-owned
+  hive-system.process.liveness/->liveness-signal
+  {:cases {:liveness/alive   {:adt/type :LivenessSignal :adt/variant :liveness/alive}
+           :liveness/dead    {:adt/type :LivenessSignal :adt/variant :liveness/dead}
+           :liveness/unknown {:adt/type :LivenessSignal :adt/variant :liveness/unknown}}
+   :xf    identity
+   :gen   (gen/elements [:liveness/alive :liveness/dead :liveness/unknown])
+   :pred  #(contains? liveness-variants (:adt/variant %))
+   :num-tests 100})
+
+(deftest liveness-signal-has-a-single-owner
+  (testing "hive-system re-exports hive-dsl's LivenessSignal instead of declaring its own"
+    (is (identical? hive-dsl.swarm-status/LivenessSignal L/LivenessSignal))
+    (is (= liveness-variants (:variants L/LivenessSignal)))
+    (is (L/liveness-signal? (L/check-pid-alive nil)))))
 
 (defspec dead-and-alive-mutually-exclusive 200
   (prop/for-all [pid gen-pid-input]

@@ -15,7 +15,7 @@
                          (degrade-soft semantics — protect against false
                          positives during boot races, container migrations,
                          and short-lived OS hiccups)."
-  (:require [hive-dsl.adt :refer [defadt]])
+  (:require [hive-dsl.swarm-status :as swarm-status])
   (:import [java.lang ProcessHandle]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -26,11 +26,28 @@
 ;; ADT
 ;; =============================================================================
 
-(defadt LivenessSignal
-  "OS-level liveness check outcome. See ns docstring."
-  :liveness/alive
-  :liveness/dead
-  :liveness/unknown)
+(def LivenessSignal
+  "OS-level liveness check outcome. See ns docstring.
+
+   Re-exported from hive-dsl.swarm-status, the single declaration of this
+   closed sum: :liveness/alive, :liveness/dead, :liveness/unknown. A second
+   defadt of the same name here would register the type twice, and the first
+   variant added on one side would break the load of the other."
+  swarm-status/LivenessSignal)
+
+(def ->liveness-signal
+  "Coerce a variant keyword to a LivenessSignal value. Re-exported from
+   hive-dsl.swarm-status."
+  swarm-status/->liveness-signal)
+
+(def liveness-signal
+  "Construct a LivenessSignal value. Re-exported from hive-dsl.swarm-status."
+  swarm-status/liveness-signal)
+
+(def liveness-signal?
+  "True iff the argument is a LivenessSignal value. Re-exported from
+   hive-dsl.swarm-status."
+  swarm-status/liveness-signal?)
 
 ;; =============================================================================
 ;; Public API

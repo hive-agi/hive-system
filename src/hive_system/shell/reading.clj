@@ -30,7 +30,8 @@
    :grammar/pattern-flags  flags whose value is the pattern, or a file of them
    :grammar/recursive      :always, or the flags that turn recursion on
    :grammar/glob-flags     flags whose value is a file-name glob to keep
-   :grammar/type-flags     flags whose value is a named file type to keep"
+   :grammar/type-flags     flags whose value is a named file type to keep
+   :grammar/type-switches  type names the program accepts as a bare `--name`"
   [:map {:closed true}
    [:grammar/id :keyword]
    [:grammar/heads [:set :string]]
@@ -39,7 +40,8 @@
    [:grammar/pattern-flags [:set :string]]
    [:grammar/recursive [:or [:= :always] [:set :string]]]
    [:grammar/glob-flags [:set :string]]
-   [:grammar/type-flags [:set :string]]])
+   [:grammar/type-flags [:set :string]]
+   [:grammar/type-switches {:optional true} [:set :string]]])
 
 (def Reading
   "What an argv says, by role.
@@ -64,7 +66,7 @@
 
 (def grep
   #:grammar{:id :grep
-            :heads #{"grep" "egrep" "fgrep" "rgrep"}
+            :heads #{"grep" "egrep" "fgrep"}
             :short-values #{\e \f \A \B \C \m \d \D}
             :long-values #{"--regexp" "--file" "--include" "--exclude"
                            "--exclude-dir" "--exclude-from" "--max-count"
@@ -74,6 +76,13 @@
             :recursive #{"-r" "-R" "--recursive" "--dereference-recursive"}
             :glob-flags #{"--include"}
             :type-flags #{}})
+
+(def rgrep
+  ;; grep's own grammar under the name that recurses without a flag.
+  (assoc grep
+         :grammar/id :rgrep
+         :grammar/heads #{"rgrep"}
+         :grammar/recursive :always))
 
 (def ripgrep
   #:grammar{:id :rg
@@ -132,9 +141,17 @@
             :glob-flags #{}
             :type-flags #{}})
 
+(def type-switches
+  "File-type names ag and ack accept as a bare `--name` flag."
+  #{"clojure" "go" "rust" "zig" "java" "python" "js" "ts" "ruby" "shell"
+    "json" "yaml" "markdown" "html" "css" "sql" "xml" "make" "cc" "cpp"})
+
 (def built-in
   "Every grammar this namespace ships."
-  [grep ripgrep ag ack git-grep])
+  [grep rgrep ripgrep
+   (assoc ag :grammar/type-switches type-switches)
+   (assoc ack :grammar/type-switches type-switches)
+   git-grep])
 
 ;;; =============================================================================
 ;;; Registry
@@ -210,12 +227,17 @@
 
 (defn read-events
   "A Reading from GRAMMAR and the events of one argv. Pure."
-  [{:grammar/keys [id pattern-flags recursive glob-flags type-flags]} events]
+  [{:grammar/keys [id pattern-flags recursive glob-flags type-flags type-switches]} events]
   (let [flags     (filter #(= :flag (first %)) events)
         operands  (mapv second (filter #(= :operand (first %)) events))
         valued    (fn [names] (into [] (comp (filter #(contains? names (second %)))
                                              (keep #(nth % 2)))
                                     flags))
+        switched  (into [] (comp (map second)
+                                 (filter #(str/starts-with? % "--"))
+                                 (map #(subs % 2))
+                                 (filter #(contains? (or type-switches #{}) %)))
+                        flags)
         flagged   (valued pattern-flags)
         ;; the first operand is the pattern unless a flag already supplied one
         [pats paths] (if (seq flagged)
@@ -227,7 +249,7 @@
      :reading/recursive? (or (= :always recursive)
                              (boolean (some #(contains? recursive (second %)) flags)))
      :reading/globs      (valued glob-flags)
-     :reading/types      (valued type-flags)}))
+     :reading/types      (into (valued type-flags) switched)}))
 
 (defn read-argv
   "Result<Reading> for ARGV, whose argv[0] names the program.

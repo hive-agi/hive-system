@@ -52,6 +52,17 @@
     (is (= (reading ["foo"] ["*.clj"] true [] [])
            (read! "git-grep" "-n" "foo" "--" "*.clj")))))
 
+(deftest rgrep-and-type-switches
+  (testing "rgrep is grep that recurses without a flag"
+    (is (= :rgrep (:reading/tool (:ok (reading/read-argv ["rgrep" "foo" "a/src"])))))
+    (is (= (reading ["foo"] ["a/src"] true [] []) (read! "rgrep" "foo" "a/src")))
+    (is (false? (:reading/recursive? (read! "grep" "foo" "a/src")))))
+  (testing "a bare --name type switch is a type; an unknown bare flag is not"
+    (is (= (reading ["foo"] [] true [] ["clojure"]) (read! "ag" "--clojure" "foo")))
+    (is (= (reading ["foo"] [] true [] ["rust"]) (read! "ack" "--rust" "-i" "foo")))
+    (is (= (reading ["foo"] [] true [] []) (read! "ag" "--hidden" "foo")))
+    (is (= (reading ["foo"] [] true [] []) (read! "rg" "--clojure" "foo")))))
+
 (deftest refusals
   (is (= :reading/unknown-program (:error (reading/read-argv ["ls" "src"]))))
   (is (= :reading/empty-argv (:error (reading/read-argv [])))))

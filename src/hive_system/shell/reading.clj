@@ -92,9 +92,49 @@
             :glob-flags #{"-g" "--glob" "--iglob"}
             :type-flags #{"-t" "--type"}})
 
+(def ag
+  #:grammar{:id :ag
+            :heads #{"ag"}
+            :short-values #{\A \B \C \G \g \m \p \W}
+            :long-values #{"--after" "--before" "--context" "--depth"
+                           "--file-search-regex" "--ignore" "--ignore-dir"
+                           "--max-count" "--pager" "--path-to-ignore"
+                           "--width" "--workers"}
+            :pattern-flags #{}
+            :recursive :always
+            :glob-flags #{"-G" "--file-search-regex"}
+            :type-flags #{}})
+
+(def ack
+  #:grammar{:id :ack
+            :heads #{"ack" "ack-grep"}
+            :short-values #{\A \B \C \m \g \t \T}
+            :long-values #{"--after-context" "--before-context" "--context"
+                           "--max-count" "--match" "--type" "--type-set"
+                           "--type-add" "--ignore-dir" "--ignore-file"
+                           "--output" "--pager" "--files-from"}
+            :pattern-flags #{"--match"}
+            :recursive :always
+            :glob-flags #{}
+            :type-flags #{"-t" "--type"}})
+
+(def git-grep
+  ;; `git grep`: argv[0] is spelled "git-grep" by the caller, which has
+  ;; already dropped `git` and its global options. Pathspecs follow `--`.
+  #:grammar{:id :git-grep
+            :heads #{"git-grep"}
+            :short-values #{\e \f \A \B \C \m \O}
+            :long-values #{"--max-depth" "--max-count" "--threads"
+                           "--after-context" "--before-context" "--context"
+                           "--open-files-in-pager"}
+            :pattern-flags #{"-e" "-f"}
+            :recursive :always
+            :glob-flags #{}
+            :type-flags #{}})
+
 (def built-in
   "Every grammar this namespace ships."
-  [grep ripgrep])
+  [grep ripgrep ag ack git-grep])
 
 ;;; =============================================================================
 ;;; Registry

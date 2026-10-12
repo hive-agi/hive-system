@@ -43,6 +43,15 @@
     (is (= (reading ["foo"] ["src"] true [] [])
            (read! "rg" "-r" "bar" "foo" "src")))))
 
+(deftest ag-ack-and-git-grep-roles
+  (testing "ag and ack recurse without a flag"
+    (is (= (reading ["foo"] [] true [] []) (read! "ag" "foo")))
+    (is (= (reading ["foo"] ["a/src"] true [] ["clojure"])
+           (read! "ack" "--type=clojure" "foo" "a/src"))))
+  (testing "git grep, spelled git-grep by the caller, with pathspecs after `--`"
+    (is (= (reading ["foo"] ["*.clj"] true [] [])
+           (read! "git-grep" "-n" "foo" "--" "*.clj")))))
+
 (deftest refusals
   (is (= :reading/unknown-program (:error (reading/read-argv ["ls" "src"]))))
   (is (= :reading/empty-argv (:error (reading/read-argv [])))))

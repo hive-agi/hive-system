@@ -4,12 +4,33 @@
    railway semantics. Mutation tests catch blind spots in error handling."
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.test.check.generators :as gen]
+            [hive-test.trifecta :refer [deftrifecta]]
             [hive-test.golden :refer [deftest-golden]]
             [hive-test.mutation :refer [deftest-mutation-witness]]
             [hive-test.properties :refer [defprop-total defprop-complement]]
             [hive-dsl.result :as r]
             [hive-system.shell.core :as sh]
             [hive-system.protocols :as proto]))
+
+(deftrifecta unknown-options-trifecta
+  #'hive-system.shell.core/unknown-option
+  {:apply? true
+   :golden-path "test/golden/shell-unknown-option.edn"
+   :cases {:exec-known [{:in "data" :timeout-ms 1 :dir "/tmp"} false]
+           :exec-unknown [{:in "data" :future-option true} false]
+           :bounded-known [{:max-lines 2 :max-bytes 8} true]
+           :bounded-unknown [{:max-lines 2 :mystery true} true]}
+   :gen (gen/fmap (fn [k] [{k true} false])
+                  (gen/elements [:future-option :mystery :max-lines]))
+   :pred keyword?
+   :mutations [["silently-ignore" (fn [_ _] nil)]]})
+
+(deftest unknown-options-are-rejected-before-spawning
+  (is (= :shell/unknown-opt (:error (sh/exec! ["this-command-must-not-run"] {:future-option true}))))
+  (is (= :shell/unknown-opt (:error (sh/lines! ["this-command-must-not-run"] {:future-option true}))))
+  (is (= :future-option (sh/unknown-option {:future-option true} false)))
+  (is (= :max-lines (sh/unknown-option {:max-lines 1} false)))
+  (is (nil? (sh/unknown-option {:max-lines 1 :in "data"} true))))
 
 ;; =============================================================================
 ;; Golden: exec! output shape (deterministic command)

@@ -183,6 +183,18 @@
                                            :timeout-ms  timeout-ms
                                            :duration-ms (elapsed)}))))))))))
 
+(def ^:private exec-option-keys
+  #{:dir :env :timeout-ms :in :stdin :inherit-io? :redirect-err?})
+
+(defn unknown-option
+  "Return the first unrecognised shell option (stable order), or nil.
+   Bounded execution adds :max-lines and :max-bytes to the exec options."
+  [opts bounded?]
+  (first (sort-by str (remove (if bounded?
+                                (into exec-option-keys #{:max-lines :max-bytes})
+                                exec-option-keys)
+                              (keys opts)))))
+
 (defn make-shell
   "Create a Shell instance with optional default opts.
    Opts: :dir, :env, :timeout-ms."
@@ -206,7 +218,10 @@
                    it is how a secret reaches a child (gpg) without touching
                    disk or argv. Without it stdin is /dev/null."
   ([cmd] (exec! cmd {}))
-  ([cmd opts] (proto/shell-exec! @default-shell cmd opts)))
+  ([cmd opts]
+   (if-let [opt (unknown-option opts false)]
+     (r/err :shell/unknown-opt {:opt opt})
+     (proto/shell-exec! @default-shell cmd opts))))
 
 (defn lines!
   "Run a command, reading at most a bounded number of output lines. Result.
@@ -232,7 +247,10 @@
    the producer, not merely to stop reading it — and `:exit` is nil, because
    the only status such a process could report describes the kill."
   ([cmd] (lines! cmd {}))
-  ([cmd opts] (proto/shell-lines! @default-shell cmd opts)))
+  ([cmd opts]
+   (if-let [opt (unknown-option opts true)]
+     (r/err :shell/unknown-opt {:opt opt})
+     (proto/shell-lines! @default-shell cmd opts))))
 
 (defn exec-ok!
   "Like exec! but returns (err ...) if exit code is non-zero."

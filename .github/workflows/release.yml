@@ -65,21 +65,30 @@ jobs:
       - name: Bump patch version
         run: clojure -T:build bump :level :patch
 
-      - name: Commit and tag
-        run: |
-          VER=$(cat VERSION)
-          git config user.name  "hive-ci"
-          git config user.email "ci@hive-agi.local"
-          git add VERSION
-          # [skip ci] stops this push from retriggering the workflow.
-          git commit -m "chore(release): $VER [skip ci]"
-          # Annotated: `git push --follow-tags` ignores lightweight tags,
-          # which would publish the artifact and silently drop the tag.
-          git tag -a "v$VER" -m "release $VER"
-          git push --follow-tags
-
       - name: Deploy
         env:
           CLOJARS_USERNAME: ${{ secrets.CLOJARS_USERNAME }}
           CLOJARS_PASSWORD: ${{ secrets.CLOJARS_DEPLOY_TOKEN }}
         run: clojure -T:build deploy
+
+      - name: Commit and tag
+        run: |
+          set -euo pipefail
+          VER=$(cat VERSION)
+          git config user.name  "hive-ci"
+          git config user.email "ci@hive-agi.local"
+          git add VERSION
+          # [skip ci] stops this push from retriggering the workflow.
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(release): $VER [skip ci]"
+          fi
+          # Annotated: `git push --follow-tags` ignores lightweight tags,
+          # which would publish the artifact and silently drop the tag.
+          if git show-ref --verify --quiet "refs/tags/v$VER"; then
+            test "$(git rev-parse "v$VER^{}")" = "$(git rev-parse HEAD)" || {
+              echo "v$VER already tags another commit" >&2; exit 1;
+            }
+          else
+            git tag -a "v$VER" -m "release $VER"
+          fi
+          git push --follow-tags

@@ -80,12 +80,17 @@
       {:path (str (fs/create-temp-dir (cond-> {} prefix (assoc :prefix (str prefix)))))}))
 
   (fs-atomic-write! [_ path content opts]
+    ;; :posix-permissions (a "rw-------" string or a PosixFilePermission set) is set on
+    ;; the temp file BEFORE any byte is written, so the content never exists
+    ;; under another mode and the atomic move lands the file with it.
     (try-effect* :fs/atomic-write-failed
       (let [target (fs/path path)
             parent (or (fs/parent target) (fs/parent (fs/absolutize target)))]
         (fs/create-dirs parent)
         (let [tmp (fs/create-temp-file {:dir parent :prefix ".hs-" :suffix ".tmp"})]
           (try
+            (when-let [perms (:posix-permissions opts)]
+              (fs/set-posix-file-permissions tmp perms))
             (write-content! tmp content opts)
             (fs/move tmp target {:replace-existing true :atomic-move true})
             {:path (str target) :bytes (fs/size target)}
@@ -162,7 +167,11 @@
 
 (defn atomic-write!
   "Write `content` to `path` via a sibling temp file + atomic rename, so a reader
-   never observes a partial file. Returns Result<{:path :bytes}>."
+   never observes a partial file. Returns Result<{:path :bytes}>.
+
+   opts: :encoding for text content; :posix-permissions (\"rw-------\" or a
+   PosixFilePermission set) is the mode the file lands with, set on the temp
+   file before any byte is written."
   ([path content] (atomic-write! path content {}))
   ([path content opts] (proto/fs-atomic-write! @default-fs path content opts)))
 

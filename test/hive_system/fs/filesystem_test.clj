@@ -90,6 +90,35 @@
     (ok! (sut/atomic-write! p payload))
     (is (= "abc" (slurp p)))))
 
+(defn- perms-of [p] (fs/posix->str (fs/posix-file-permissions p)))
+
+(deftest atomic-write-applies-posix-permissions-for-a-credentials-file
+  (let [p (under "creds" "token.json")]
+    (ok! (sut/atomic-write! p "{\"t\":1}" {:posix-permissions "rw-------"}))
+    (is (= "rw-------" (perms-of p)))
+    (is (= "{\"t\":1}" (slurp p)))))
+
+(deftest atomic-write-posix-permissions-is-the-mode-the-file-lands-with
+  (testing "a mode other than the temp file's default is honoured, so the
+            option is applied and not merely coincident with it"
+    (let [p (under "shared.edn")]
+      (ok! (sut/atomic-write! p "{}" {:posix-permissions "rw-r-----"}))
+      (is (= "rw-r-----" (perms-of p))))
+    (testing "an overwrite takes the new mode, not the old file's"
+      (let [p (under "shared.edn")]
+        (ok! (sut/atomic-write! p "{:a 1}" {:posix-permissions "rw-------"}))
+        (is (= "rw-------" (perms-of p)))))))
+
+(deftest atomic-write-with-a-bad-permissions-string-fails-and-writes-nothing
+  (let [p   (under "bad.txt")
+        res (sut/atomic-write! p "secret" {:posix-permissions "not-a-mode"})]
+    (is (r/err? res))
+    (is (= :fs/atomic-write-failed (:error res)))
+    (is (not (fs/exists? p)) "the target must not appear")
+    (is (empty? (filter #(re-find #"^\.hs-" (str (fs/file-name %)))
+                        (fs/list-dir *root*)))
+        "the temp file must not survive the failure")))
+
 ;; --- lock -------------------------------------------------------------------
 
 (deftest lock-is-exclusive-and-releasable

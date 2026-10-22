@@ -71,6 +71,44 @@
         (try (with-open [w (.getOutputStream proc)] (.write w b))
              (catch java.io.IOException _ nil))))))
 
+(defonce ^:private metrics-record
+  ^{:doc "Deref: `hive-ttracking.metrics/record!` or nil when that namespace is
+          absent. Required once; later derefs re-check with a plain `resolve`,
+          so a port mounted after first use is still picked up."}
+  (let [d (delay (try (requiring-resolve 'hive-ttracking.metrics/record!)
+                      (catch Throwable _ nil)))]
+    (reify clojure.lang.IDeref
+      (deref [_] (or @d (resolve 'hive-ttracking.metrics/record!))))))
+
+(defn program-label
+  "The bounded metrics label for `cmd`: the base name of the program a vector
+   command runs (never its arguments or directory), \"sh\" for a string
+   command run through `sh -c`, \"?\" otherwise. Pure."
+  [cmd]
+  (cond
+    (string? cmd) "sh"
+    (and (sequential? cmd) (seq cmd))
+    (let [p (str (first cmd))
+          i (.lastIndexOf p "/")]
+      (if (neg? i) p (subs p (inc i))))
+    :else "?"))
+
+(defn timed-proc
+  "Run `thunk` (answering a hive-dsl Result) and record its wall time as
+   `[:proc/shell (program-label cmd)]` through the late-bound
+   hive-ttracking metrics port; outcome :error for an err Result or a throw
+   (rethrown). Returns the thunk's value. Recording never throws."
+  [cmd thunk]
+  (let [start (System/nanoTime)
+        rec   (fn [outcome]
+                (when-let [f @metrics-record]
+                  (try (f [:proc/shell (program-label cmd)] (- (System/nanoTime) start) outcome)
+                       (catch Throwable _ nil))))]
+    (let [v (try (thunk)
+                 (catch Throwable t (rec :error) (throw t)))]
+      (rec (if (r/err? v) :error :ok))
+      v)))
+
 (defrecord Shell [default-opts]
   proto/IShell
   (shell-exec! [_ cmd opts]
@@ -216,12 +254,14 @@
      :in         — a String (sent as UTF-8) or bytes written to the child's
                    stdin, then closed. Never part of any result or error, so
                    it is how a secret reaches a child (gpg) without touching
-                   disk or argv. Without it stdin is /dev/null."
+                   disk or argv. Without it stdin is /dev/null.
+
+   Timed as `[:proc/shell program]` (see `timed-proc`)."
   ([cmd] (exec! cmd {}))
   ([cmd opts]
    (if-let [opt (unknown-option opts false)]
      (r/err :shell/unknown-opt {:opt opt})
-     (proto/shell-exec! @default-shell cmd opts))))
+     (timed-proc cmd #(proto/shell-exec! @default-shell cmd opts)))))
 
 (defn lines!
   "Run a command, reading at most a bounded number of output lines. Result.
@@ -245,12 +285,14 @@
 
    When truncated the process TREE is destroyed — a cap is a decision to stop
    the producer, not merely to stop reading it — and `:exit` is nil, because
-   the only status such a process could report describes the kill."
+   the only status such a process could report describes the kill.
+
+   Timed as `[:proc/shell program]` (see `timed-proc`)."
   ([cmd] (lines! cmd {}))
   ([cmd opts]
    (if-let [opt (unknown-option opts true)]
      (r/err :shell/unknown-opt {:opt opt})
-     (proto/shell-lines! @default-shell cmd opts))))
+     (timed-proc cmd #(proto/shell-lines! @default-shell cmd opts)))))
 
 (defn exec-ok!
   "Like exec! but returns (err ...) if exit code is non-zero."

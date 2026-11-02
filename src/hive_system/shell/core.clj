@@ -150,10 +150,14 @@
               ;; a deadline kill forces, and takes the descendants with it;
               ;; best-effort, since the timeout is the answer either way
               (try (tree/destroy-tree! proc true) (catch Exception _ nil))
-              (r/err :shell/timeout
-                     {:cmd         cmd
-                      :timeout-ms  timeout-ms
-                      :duration-ms duration-ms})))))))
+              (let [out (deref stdout-p streams/flush-grace-ms ::open)
+                    err (deref stderr-p streams/flush-grace-ms ::open)]
+                (r/err :shell/timeout
+                       {:cmd         cmd
+                        :timeout-ms  timeout-ms
+                        :duration-ms duration-ms
+                        :stdout      (if (= ::open out) "" out)
+                        :stderr      (if (= ::open err) "" err)}))))))))
 
   (shell-env [_]
     (into {} (System/getenv)))

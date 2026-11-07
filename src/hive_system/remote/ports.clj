@@ -64,3 +64,15 @@
                      (log/error "with-host: terminate failed; the host may still bill" {:id id :result term})))
                  (catch Throwable t
                    (log/error t "with-host: terminate threw; the host may still bill" {:id id})))))))))
+
+(defmulti host-provider
+  "The IHostProvider `cfg` names by :kind (:tailnet, :k8s, :runpod, ...), as a
+   Result. An OPEN set: an adapter namespace registers its kind with a
+   defmethod; loading that namespace is what makes the kind available."
+  (fn [cfg] (:kind cfg)))
+
+(defmethod host-provider :default [cfg]
+  (r/err :remote/unknown-provider
+         {:kind    (:kind cfg)
+          :message (str "No host provider registered for " (pr-str (:kind cfg))
+                        "; require the adapter namespace that registers it")}))

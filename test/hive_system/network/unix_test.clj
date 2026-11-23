@@ -306,6 +306,78 @@
         (is (= {:ok {:path path :unlinked? true}} (deref closing 5000 ::hung)))
         (is (not (exists? path)))))))
 
+(defn- in-interrupted-thread
+  "Run (f) on a fresh thread whose interrupt flag is set first.
+   => {:value (f) :interrupted? flag-after}"
+  [f]
+  (let [out (promise)
+        t   (Thread. ^Runnable (fn []
+                                 (.interrupt (Thread/currentThread))
+                                 (let [v (try (f) (catch Throwable e e))]
+                                   (deliver out {:value v
+                                                 :interrupted? (.isInterrupted (Thread/currentThread))}))))]
+    (.start t)
+    (deref out 5000 ::hung)))
+
+(defn- listening? [path]
+  (= {:ok :live} (unix/probe path)))
+
+(deftest stop-from-interrupted-thread-closes-the-channel
+  (testing "review round 3: stop! on an interrupted thread still closes the server"
+    (let [path (sock "intr")
+          srv  (echo-server path)]
+      (try
+        (is (= {:ok "echo:up"} (ask path "up")))
+        (let [{:keys [value interrupted?]} (in-interrupted-thread (:stop! srv))]
+          (is (= {:path path :unlinked? false :lock-failed? true} (:ok value)) (pr-str value))
+          (is (true? interrupted?) "the interrupt flag survives"))
+        (is (not (.isOpen ^java.nio.channels.ServerSocketChannel (:server-socket srv))))
+        (testing "the accept loop no longer listens: the left file probes :stale"
+          (is (not (listening? path)))
+          (is (= {:ok :stale} (unix/probe path))))
+        (testing "a new bind! on the path replaces the stale file"
+          (let [srv2 (echo-server path)]
+            (try
+              (is (:replaced-stale? srv2))
+              (is (= {:ok "echo:again"} (ask path "again")))
+              (finally ((:stop! srv2))))))
+        (finally
+          (when (.isOpen ^java.nio.channels.ServerSocketChannel (:server-socket srv))
+            ((:stop! srv))))))))
+
+(deftest close-without-lock-dir-closes-the-channel
+  (testing "review round 3: the lock file's directory is gone, close-server! still closes"
+    (let [dir  (str *dir* "/gone")
+          path (str dir "/s.sock")
+          srv  (:ok (unix/bind! path))]
+      (is (some? srv))
+      ;; the server channel stays bound in the kernel; only the names go
+      (Files/delete (path-of path))
+      (Files/delete (path-of (str path ".lock")))
+      (Files/delete (path-of dir))
+      (let [res (unix/close-server! srv)]
+        (is (= {:ok {:path path :unlinked? false :lock-failed? true}} res) (pr-str res)))
+      (is (not (.isOpen ^java.nio.channels.ServerSocketChannel (:server-socket srv))))
+      (testing "a new bind! on the same path succeeds"
+        (let [srv2 (echo-server path)]
+          (try
+            (is (some? srv2))
+            (is (= {:ok "echo:back"} (ask path "back")))
+            (finally (when srv2 ((:stop! srv2))))))))))
+
+(deftest close-with-lock-file-gone-leaves-the-socket-file
+  (testing "review round 3: lock cannot be taken, the socket file is left for the next bind!"
+    (let [path (sock "nolock")
+          srv  (:ok (unix/bind! path))]
+      ;; a .lock that cannot be opened: replace it with a directory
+      (Files/delete (path-of (str path ".lock")))
+      (Files/createDirectory (path-of (str path ".lock")) (make-array FileAttribute 0))
+      (let [res (unix/close-server! srv)]
+        (is (= {:ok {:path path :unlinked? false :lock-failed? true}} res) (pr-str res)))
+      (is (not (.isOpen ^java.nio.channels.ServerSocketChannel (:server-socket srv))))
+      (is (exists? path) "the file is left; never unlinked without the lock")
+      (is (= {:ok :stale} (unix/probe path))))))
+
 (deftest dir-created-0700-at-create
   (testing "point 3: every directory ensure-dir! creates is 0700 from the start"
     (let [leaf (str *dir* "/a/b")]
@@ -314,10 +386,16 @@
       (is (= {:ok "rwx------"} (unix/mode-string leaf))))))
 
 (deftest dir-owner-check-fails-closed
-  (testing "point 4: a directory of another user is refused even when the uid is unknown"
+  (testing "point 4: a directory of another user is refused (its owner is not the probe file's)"
     (when-not (= "root" (System/getProperty "user.name"))
-      (with-redefs [unix/current-uid (constantly nil)]
-        (is (= :unix/dir-not-owned (:error (unix/ensure-dir! "/tmp")))))))
+      (is (= :unix/dir-not-owned (:error (unix/ensure-dir! "/tmp"))))))
+  (testing "point 4: an own directory is refused when the probe file's owner differs"
+    (let [d     (str *dir* "/other")
+          other (Files/getOwner (path-of "/") (make-array LinkOption 0))]
+      (Files/createDirectories (path-of d) (make-array FileAttribute 0))
+      (when-not (.equals other (Files/getOwner (path-of d) (make-array LinkOption 0)))
+        (with-redefs [unix/process-owner (constantly other)]
+          (is (= :unix/dir-not-owned (:error (unix/ensure-dir! d))))))))
   (testing "point 4: when the process owner cannot be learned, the directory is refused"
     (when-not (= "root" (System/getProperty "user.name"))
       (let [d (str *dir* "/ro")]

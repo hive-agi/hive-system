@@ -53,7 +53,6 @@
   "Pause of the serve-lines! accept loop after a failed accept while the
    server channel is still open, so a persistent failure does not spin."
   50)
-(def ^:private no-attrs (make-array FileAttribute 0))
 
 (defn- ->path ^Path [p]
   (if (instance? Path p) p (Path/of (str p) (make-array String 0))))
@@ -319,20 +318,41 @@
    server's socket (its :file-key, dev+inode, matches): once another
    starter has replaced the path, the new live socket is left alone.
    Unlinking before the close means no starter can see this socket as
-   :stale in between. => Result<{:path :unlinked?}>"
+   :stale in between.
+
+   The channel is ALWAYS closed. When the lock cannot be taken (an
+   interrupted thread, a vanished directory or .lock file) the channel is
+   closed and the file is left: the next bind! probes it :stale and
+   removes it under its own lock. A caught InterruptedException restores
+   the thread's interrupt flag.
+   => Result<{:path :unlinked?}>; {:path :unlinked? false :lock-failed? true}
+   when the lock was not taken."
   [{:keys [^ServerSocketChannel server-socket path file-key]}]
-  (if-not path
-    (try-effect* :unix/close-failed
-      (when server-socket (.close server-socket))
-      {:path nil :unlinked? false})
-    (let [p (.toAbsolutePath (->path path))]
-      (with-bind-lock (->path (str p ".lock"))
-        (fn []
+  (let [close! (fn [] (when server-socket (.close server-socket)))]
+    (if-not path
+      (try-effect* :unix/close-failed
+        (close!)
+        {:path nil :unlinked? false})
+      (let [p   (.toAbsolutePath (->path path))
+            res (try
+                  (with-bind-lock (->path (str p ".lock"))
+                    (fn []
+                      (try-effect* :unix/close-failed
+                        (try
+                          (let [mine? (and (some? file-key) (= file-key (file-key-of p)))]
+                            {:path path :unlinked? (boolean (and mine? (Files/deleteIfExists p)))})
+                          (finally (close!))))))
+                  (catch InterruptedException e
+                    (.interrupt (Thread/currentThread))
+                    (r/err :unix/lock-failed {:path path :message (ex-message e)}))
+                  (finally
+                    ;; idempotent; covers any throw out of the lock path
+                    (try (close!) (catch IOException _ nil))))]
+        (if (= :unix/lock-failed (:error res))
           (try-effect* :unix/close-failed
-            (let [mine?     (and (some? file-key) (= file-key (file-key-of p)))
-                  unlinked? (boolean (and mine? (Files/deleteIfExists p)))]
-              (when server-socket (.close server-socket))
-              {:path path :unlinked? unlinked?})))))))
+            (close!)
+            {:path path :unlinked? false :lock-failed? true})
+          res)))))
 
 ;; =============================================================================
 ;; Peer credentials (T4)

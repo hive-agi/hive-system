@@ -147,6 +147,14 @@
       (is (< elapsed-ms 3000.0)
           (str "a 300ms timeout took " (long elapsed-ms) "ms to return")))))
 
+(deftest exec-timeout-keeps-output-captured-so-far
+  (testing "a timed-out command answers the stdout and stderr it wrote before the deadline"
+    (let [result (sh/exec! "echo step-one; echo warn-one >&2; sleep 10; echo never" {:timeout-ms 500})]
+      (is (= :shell/timeout (:error result)))
+      (is (= "step-one\n" (:stdout result)))
+      (is (= "warn-one\n" (:stderr result)))
+      (is (not (re-find #"never" (str (:stdout result))))))))
+
 ;; =============================================================================
 ;; Unit: exec! with vector command (no shell interpretation)
 ;; =============================================================================

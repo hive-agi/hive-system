@@ -4,7 +4,7 @@
             [hive-system.network.unix :as unix]
             [hive-system.protocols :as proto])
   (:import [java.nio.channels SocketChannel]
-           [java.nio.file Files Path]
+           [java.nio.file Files LinkOption Path]
            [java.nio.file.attribute FileAttribute PosixFilePermissions]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
@@ -135,17 +135,100 @@
         (is (= :frame/timeout (:error (unix/read-line! (unix/line-reader c) 50)))))
       (finally (unix/close-server! raw)))))
 
-(deftest peer-uid-is-ours
+(deftest peer-principal-is-dir-owner
   (let [path (sock "peer")
+        dir  (str *dir* "/run")
         raw  (:ok (unix/bind! path))]
     (try
       (with-open [c ^SocketChannel (:channel (:ok (unix/connect! path)))
                   s ^SocketChannel (:channel (:ok (unix/accept! (:server-socket raw))))]
-        (let [peer (unix/peer-uid s)]
-          (is (or (nil? peer) (= (unix/current-uid) peer)))
-          (is (unix/peer-allowed? s))
+        (let [peer (unix/peer-principal s)]
+          (testing "SO_PEERCRED principal equals the socket dir owner (public API)"
+            (is (or (= ::unix/unsupported peer)
+                    (.equals (Files/getOwner (Path/of dir (make-array String 0))
+                                             (make-array LinkOption 0))
+                             peer))))
+          (is (true? (unix/peer-allowed? s dir)))
+          (testing "a directory that cannot be stat'd refuses (when SO_PEERCRED is supported)"
+            (when-not (= ::unix/unsupported peer)
+              (is (false? (unix/peer-allowed? s (str *dir* "/no-such-dir"))))))
           (is (some? c))))
       (finally (unix/close-server! raw)))))
+
+(deftest symlinked-dir-refused
+  (let [real (str *dir* "/real")
+        link (str *dir* "/link")]
+    (Files/createDirectories (Path/of real (make-array String 0)) (make-array FileAttribute 0))
+    (Files/createSymbolicLink (Path/of link (make-array String 0))
+                              (Path/of real (make-array String 0))
+                              (make-array FileAttribute 0))
+    (is (= :unix/dir-is-symlink (:error (unix/ensure-dir! link))))
+    (testing "bind! under a symlinked dir is refused and creates nothing"
+      (is (= :unix/dir-is-symlink (:error (unix/bind! (str link "/s.sock")))))
+      (is (not (Files/exists (Path/of real (into-array String ["s.sock"]))
+                             (make-array LinkOption 0)))))
+    (testing "the real directory is accepted"
+      (is (= {:ok {:path real}} (unix/ensure-dir! real))))))
+
+(deftest concurrent-bind-on-stale-path
+  (dotimes [i 10]
+    (let [path    (sock (str "race" i))
+          crashed (:ok (unix/bind! path))]
+      ;; a crashed server: channel closed, file left behind
+      (.close ^java.nio.channels.ServerSocketChannel (:server-socket crashed))
+      (is (= {:ok :stale} (unix/probe path)))
+      (let [gate    (java.util.concurrent.CountDownLatch. 1)
+            starter #(future (.await gate) (unix/bind! path))
+            fa      (starter)
+            fb      (starter)
+            _       (.countDown gate)
+            results [@fa @fb]
+            winners (filter :ok results)
+            losers  (remove :ok results)]
+        (try
+          (is (= 1 (count winners)) (pr-str results))
+          (is (= [:unix/address-in-use] (map :error losers)))
+          (testing "the winner keeps its socket file and answers"
+            (let [srv (:ok (first winners))]
+              (is (= {:ok :live} (unix/probe path)))
+              (with-open [c ^SocketChannel (:channel (:ok (unix/connect! path)))]
+                (unix/write-line! c "ping")
+                ;; the backlog also holds the probes' connections (closed
+                ;; at once, so they read EOF); the client's comes after them
+                (let [next-line (fn []
+                                  (with-open [s ^SocketChannel (:channel (:ok (unix/accept! (:server-socket srv))))]
+                                    (unix/read-line! (unix/line-reader s) 2000)))]
+                  (is (= {:ok "ping"}
+                         (->> (repeatedly 5 next-line)
+                              (drop-while #(= :frame/eof (:error %)))
+                              first)))))))
+          (finally
+            (doseq [w winners] (unix/close-server! (:ok w)))))))))
+
+(deftest accept-failure-backs-off
+  (testing "the accept loop pauses about accept-backoff-ms after a failed accept"
+    (let [calls (atom [])
+          open? (atom true)
+          t0    (System/nanoTime)]
+      (#'unix/accept-loop! #(deref open?)
+                           (fn []
+                             (swap! calls conj (System/nanoTime))
+                             (when (>= (count @calls) 5) (reset! open? false))
+                             (throw (java.io.IOException. "boom")))
+                           (fn [_] (throw (AssertionError. "no channel was accepted"))))
+      (let [ms (/ (- (System/nanoTime) t0) 1e6)]
+        (is (= 5 (count @calls)))
+        (testing "four pauses between five failures: no busy spin"
+          (is (>= ms (* 4 0.8 unix/accept-backoff-ms)) (str ms " ms")))
+        (testing "no pause once the channel is closed"
+          (is (< ms (* 5 4 unix/accept-backoff-ms)) (str ms " ms"))))))
+  (testing "accepted channels are handed on; nil is skipped"
+    (let [seen  (atom [])
+          queue (atom [nil :a :b])]
+      (#'unix/accept-loop! #(boolean (seq @queue))
+                           (fn [] (let [x (first @queue)] (swap! queue rest) x))
+                           #(swap! seen conj %))
+      (is (= [:a :b] @seen)))))
 
 (deftest over-long-path-refused
   (is (= :socket-path/too-long

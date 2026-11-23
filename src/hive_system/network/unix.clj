@@ -5,11 +5,16 @@
    Rules it enforces:
      T2  the path comes from hive-system.network.path; the directory is 0700
          and the socket file 0600.
+         ensure-dir! refuses a socket directory that is a symlink.
      T3  bind! connect-probes first: a STALE path (nobody answers) is
          unlinked and re-bound, a LIVE one is never unlinked and the bind
-         fails, a path that is not a socket is never touched.
-     T4  peer-uid reads SO_PEERCRED (jdk.net.ExtendedSocketOptions); nil
-         where the JDK does not expose it, so the 0600 mode is the floor.
+         fails, a path that is not a socket is never touched. Probe, unlink
+         and bind run under an exclusive lock on <socket-path>.lock, so two
+         starters cannot unlink each other's fresh socket.
+     T4  peer-allowed? compares the SO_PEERCRED principal (public API:
+         jdk.net.UnixDomainPrincipal/user) with the owner of the socket
+         directory; where SO_PEERCRED is unsupported the 0600 mode is the
+         floor.
      T5  frames are newline-delimited UTF-8 lines with a max-frame-bytes cap
          (line-reader / read-line! / write-line!).
 
@@ -23,10 +28,12 @@
   (:import [java.io ByteArrayOutputStream]
            [java.net ConnectException StandardProtocolFamily UnixDomainSocketAddress]
            [java.nio ByteBuffer]
-           [java.nio.channels SelectionKey Selector ServerSocketChannel SocketChannel]
+           [java.nio.channels FileChannel SelectionKey Selector ServerSocketChannel SocketChannel]
            [java.nio.charset CharacterCodingException CodingErrorAction StandardCharsets]
-           [java.nio.file Files LinkOption Path]
-           [java.nio.file.attribute FileAttribute PosixFilePermissions]))
+           [java.nio.file Files LinkOption Path StandardOpenOption]
+           [java.nio.file.attribute FileAttribute PosixFilePermissions UserPrincipal]
+           [java.util.concurrent ConcurrentHashMap]
+           [java.util.function Function]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -37,6 +44,12 @@
   (* 1024 1024))
 
 (def ^:private no-link-opts (make-array LinkOption 0))
+(def ^:private nofollow (into-array LinkOption [LinkOption/NOFOLLOW_LINKS]))
+
+(def accept-backoff-ms
+  "Pause of the serve-lines! accept loop after a failed accept while the
+   server channel is still open, so a persistent failure does not spin."
+  50)
 (def ^:private no-attrs (make-array FileAttribute 0))
 
 (defn- ->path ^Path [p]
@@ -80,19 +93,31 @@
 ;; =============================================================================
 
 (defn ensure-dir!
-  "Create `dir` (and parents) and set it 0700. Refuses a directory owned by
-   another uid. => Result<{:path}>"
+  "Create `dir` (and parents) and set it 0700. Refuses a directory that is a
+   symlink (checked with NOFOLLOW_LINKS before and after the create) or
+   that is owned by another uid. => Result<{:path}>"
   [dir]
-  (let [p (->path dir)]
-    (r/let-ok [_ (try-effect* :unix/mkdir-failed (Files/createDirectories p no-attrs))
-               owner (try-effect* :unix/stat-failed (Files/getAttribute p "unix:uid" no-link-opts))]
-      (let [uid (current-uid)]
-        (if (and uid (not= (long owner) (long uid)))
-          (r/err :unix/dir-not-owned {:path (str p) :owner owner :uid uid
-                                      :message "socket directory belongs to another user"})
-          (try-effect* :unix/chmod-failed
-            (set-mode! p "rwx------")
-            {:path (str p)}))))))
+  (let [p        (->path dir)
+        symlink? (fn [] (Files/isSymbolicLink p))
+        refuse   (fn [] (r/err :unix/dir-is-symlink
+                               {:path (str p) :message "socket directory is a symlink; refused"}))]
+    (if (symlink?)
+      (refuse)
+      (r/let-ok [_     (try-effect* :unix/mkdir-failed (Files/createDirectories p no-attrs))
+                 owner (try-effect* :unix/stat-failed (Files/getAttribute p "unix:uid" nofollow))]
+        (let [uid (current-uid)]
+          (cond
+            (or (symlink?) (not (Files/isDirectory p nofollow)))
+            (refuse)
+
+            (and uid (not= (long owner) (long uid)))
+            (r/err :unix/dir-not-owned {:path (str p) :owner owner :uid uid
+                                        :message "socket directory belongs to another user"})
+
+            :else
+            (try-effect* :unix/chmod-failed
+              (set-mode! p "rwx------")
+              {:path (str p)})))))))
 
 (defn probe
   "What sits at `path`: :absent, :live (a server answers), :stale (a socket
@@ -111,35 +136,76 @@
 ;; Bind, connect, accept, close
 ;; =============================================================================
 
+(def ^:private jvm-bind-locks
+  "In-JVM lock per lock-file path: a FileLock is held per JVM, so two
+   threads of one JVM must also be serialized here (a second FileChannel
+   lock on the same file in the same JVM throws instead of waiting)."
+  (ConcurrentHashMap.))
+
+(defn- jvm-bind-lock ^java.util.concurrent.locks.ReentrantLock [^String k]
+  (.computeIfAbsent ^ConcurrentHashMap jvm-bind-locks k
+                    (reify Function
+                      (apply [_ _] (java.util.concurrent.locks.ReentrantLock.)))))
+
+(defn- with-bind-lock
+  "Run (f) holding an exclusive lock on `lock-path`: the in-JVM lock, then a
+   FileChannel lock on the file (created 0600), so a starter in another
+   process waits too. The lock file is left in place: unlinking it would
+   let a third starter lock a fresh inode while the second still holds the
+   old one. => (f)'s Result."
+  [^Path lock-path f]
+  (let [jl (jvm-bind-lock (str (.toAbsolutePath lock-path)))]
+    (.lock jl)
+    (try
+      (r/let-ok [^FileChannel fc
+                 (try-effect* :unix/lock-failed
+                   (FileChannel/open lock-path
+                                     (doto (java.util.HashSet.)
+                                       (.add StandardOpenOption/CREATE)
+                                       (.add StandardOpenOption/WRITE)
+                                       (.add LinkOption/NOFOLLOW_LINKS))
+                                     (into-array FileAttribute
+                                                 [(PosixFilePermissions/asFileAttribute
+                                                   (PosixFilePermissions/fromString "rw-------"))])))]
+        (try
+          (r/let-ok [_ (try-effect* :unix/lock-failed (.lock fc))]
+            (f))
+          (finally (.close fc))))
+      (finally (.unlock jl)))))
+
 (defn bind!
-  "Listen on `path` (T3): ensure the parent dir 0700, connect-probe, unlink
-   only a stale socket, bind, chmod 0600. opts: :backlog (default 0 = JDK).
-   => Result<{:server-socket ServerSocketChannel :path string}>"
+  "Listen on `path` (T3): ensure the parent dir 0700, then, holding an
+   exclusive lock on <path>.lock, connect-probe, unlink only a stale socket
+   and bind; chmod 0600. opts: :backlog (default 0 = JDK).
+   => Result<{:server-socket ServerSocketChannel :path string :replaced-stale?}>"
   ([path] (bind! path {}))
   ([path {:keys [backlog] :or {backlog 0}}]
-   (let [p (->path path)]
-     (r/let-ok [_     (ensure-dir! (.getParent (.toAbsolutePath p)))
-                state (probe p)
-                _     (case state
-                        :live       (r/err :unix/address-in-use
-                                           {:path (str p) :message "a live server answers on this socket"})
-                        :not-socket (r/err :unix/not-a-socket
-                                           {:path (str p) :message "path exists and is not a socket; left alone"})
-                        :stale      (try-effect* :unix/unlink-failed (Files/deleteIfExists p))
-                        :absent     (r/ok nil))
-                ssc   (try-effect* :unix/bind-failed
-                        (let [ssc (ServerSocketChannel/open StandardProtocolFamily/UNIX)]
-                          (try
-                            (.bind ssc (address p) (int backlog))
-                            ssc
-                            (catch Throwable t (.close ssc) (throw t)))))]
-       (try
-         (set-mode! p "rw-------")
-         (r/ok {:server-socket ssc :path (str p) :replaced-stale? (= state :stale)})
-         (catch Exception e
-           (.close ^ServerSocketChannel ssc)
-           (Files/deleteIfExists p)
-           (r/err :unix/chmod-failed {:path (str p) :message (ex-message e)})))))))
+   (let [p    (.toAbsolutePath (->path path))
+         lock (->path (str p ".lock"))]
+     (r/let-ok [_ (ensure-dir! (.getParent p))]
+       (with-bind-lock lock
+         (fn []
+           (r/let-ok [state (probe p)
+                      _     (case state
+                              :live       (r/err :unix/address-in-use
+                                                 {:path (str p) :message "a live server answers on this socket"})
+                              :not-socket (r/err :unix/not-a-socket
+                                                 {:path (str p) :message "path exists and is not a socket; left alone"})
+                              :stale      (try-effect* :unix/unlink-failed (Files/deleteIfExists p))
+                              :absent     (r/ok nil))
+                      ssc   (try-effect* :unix/bind-failed
+                              (let [ssc (ServerSocketChannel/open StandardProtocolFamily/UNIX)]
+                                (try
+                                  (.bind ssc (address p) (int backlog))
+                                  ssc
+                                  (catch Throwable t (.close ssc) (throw t)))))]
+             (try
+               (set-mode! p "rw-------")
+               (r/ok {:server-socket ssc :path (str p) :replaced-stale? (= state :stale)})
+               (catch Exception e
+                 (.close ^ServerSocketChannel ssc)
+                 (Files/deleteIfExists p)
+                 (r/err :unix/chmod-failed {:path (str p) :message (ex-message e)}))))))))))
 
 (defn connect!
   "Open a client channel to `path`. => Result<{:socket path :channel SocketChannel}>"
@@ -172,29 +238,29 @@
         (.get (.getField cls "SO_PEERCRED") nil))
       (catch Throwable _ nil))))
 
-(defn peer-uid
-  "uid of the process at the other end of `ch`, through SO_PEERCRED, or nil
-   when the JDK or the OS does not expose it.
-
-   The JDK hands the credential back as a UnixUserPrincipal built from the
-   uid; its hashCode is that uid (sun.nio.fs.UnixUserPrincipals$User), and
-   the class is checked so no other principal is misread."
+(defn peer-principal
+  "The UserPrincipal of the process at the other end of `ch`, read through
+   SO_PEERCRED (jdk.net.UnixDomainPrincipal/user, public API), or
+   ::unsupported when the JDK or the OS does not expose the option.
+   Throws when the option is supported but reading it fails."
   [^SocketChannel ch]
-  (when-let [opt @peercred-option]
-    (try
-      (let [cred (.getOption ch opt)
-            user (.user ^jdk.net.UnixDomainPrincipal cred)]
-        (when (= "sun.nio.fs.UnixUserPrincipals$User" (.getName (class user)))
-          (long (.hashCode user))))
-      (catch Throwable _ nil))))
+  (let [opt @peercred-option]
+    (if (and opt (.contains (.supportedOptions ch) opt))
+      (.user ^jdk.net.UnixDomainPrincipal (.getOption ch opt))
+      ::unsupported)))
 
 (defn peer-allowed?
-  "T4: true when the peer uid equals this process's uid; also true when
-   either is unknown (the 0600 file mode is then the only guard)."
-  [ch]
-  (let [peer (peer-uid ch)
-        me   (current-uid)]
-    (or (nil? peer) (nil? me) (= (long peer) (long me)))))
+  "T4: true when the SO_PEERCRED principal of `ch` equals (by .equals) the
+   owner of the socket directory `dir` (java.nio.file.Files/getOwner), or
+   when SO_PEERCRED is unsupported (the 0600 file mode is then the floor).
+   Any failure to read either side refuses."
+  [ch dir]
+  (try
+    (let [peer (peer-principal ch)]
+      (or (= ::unsupported peer)
+          (let [^UserPrincipal owner (Files/getOwner (->path dir) nofollow)]
+            (boolean (and peer (.equals owner peer))))))
+    (catch Throwable _ false)))
 
 ;; =============================================================================
 ;; Raw IO with timeout
@@ -341,19 +407,41 @@
 ;; A line server (accept loop with the T4 peer check)
 ;; =============================================================================
 
+(defn- accept-loop!
+  "While (open?) is true, call (accept!) and hand each non-nil channel to
+   (on-channel ch). When accept! throws while (open?) still holds, sleep
+   accept-backoff-ms before trying again, so a persistent failure (e.g.
+   EMFILE) does not spin a core; a throw after close ends the loop."
+  [open? accept! on-channel]
+  (loop []
+    (when (open?)
+      (let [ch (try (accept!) (catch Exception _ ::failed))]
+        (cond
+          (= ::failed ch)
+          (when (open?)
+            (try (Thread/sleep (long accept-backoff-ms))
+                 (catch InterruptedException _ nil)))
+
+          (some? ch)
+          (on-channel ch)))
+      (recur))))
+
 (defn serve-lines!
   "Bind `path` and answer each line with (handler line) on a virtual thread
-   per connection; a nil answer sends nothing. Peers whose uid differs from
-   ours are closed unanswered. opts: :max-frame-bytes, :backlog.
+   per connection; a nil answer sends nothing. Peers whose SO_PEERCRED
+   principal is not the owner of the socket directory are closed
+   unanswered. A failed accept while the server is open pauses
+   accept-backoff-ms before the next one. opts: :max-frame-bytes, :backlog.
    => Result<{:server-socket :path :stop! (fn [])}>"
   ([path handler] (serve-lines! path handler {}))
   ([path handler opts]
    (r/let-ok [srv (bind! path opts)]
      (let [^ServerSocketChannel ssc (:server-socket srv)
+           dir   (.getParent (->path (:path srv)))
            max   (or (:max-frame-bytes opts) default-max-frame-bytes)
            conn  (fn [^SocketChannel ch]
                    (with-open [ch ch]
-                     (when (peer-allowed? ch)
+                     (when (peer-allowed? ch dir)
                        (let [rdr (line-reader ch {:max-frame-bytes max})]
                          (loop []
                            (let [res (read-line! rdr)]
@@ -366,11 +454,11 @@
                                (= :frame/too-large (:error res)) (recur)
                                :else nil)))))))
            loop! (fn []
-                   (loop []
-                     (when (.isOpen ssc)
-                       (when-let [ch (try (.accept ssc) (catch Exception _ nil))]
-                         (Thread/startVirtualThread ^Runnable (fn [] (try (conn ch) (catch Exception _ nil)))))
-                       (recur))))]
+                   (accept-loop! #(.isOpen ssc)
+                                 #(.accept ssc)
+                                 (fn [ch]
+                                   (Thread/startVirtualThread
+                                    ^Runnable (fn [] (try (conn ch) (catch Exception _ nil)))))))]
        (Thread/startVirtualThread ^Runnable loop!)
        (r/ok (assoc srv :stop! (fn [] (close-server! srv))))))))
 

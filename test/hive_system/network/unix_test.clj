@@ -249,3 +249,147 @@
             (is (= "hello" (String. ^bytes (:data res) "UTF-8"))))
           (is (= :net/timeout (:error (proto/net-recv! net s 64 30))))))
       (finally (unix/close-server! srv)))))
+
+;; =============================================================================
+;; Review round 2
+;; =============================================================================
+
+(deftest probe-of-saturated-live-server-does-not-hang
+  (testing "point 1: a live server with a full backlog probes :live within the deadline"
+    (let [path (sock "full")
+          srv  (:ok (unix/bind! path {:backlog 1}))
+          ;; nobody accepts: two connects fill a backlog of 1
+          fill (vec (repeatedly 2 #(:channel (:ok (unix/connect! path)))))]
+      (try
+        (let [probed (future (unix/probe path))
+              bound  (future (unix/bind! path))]
+          (is (= {:ok :live} (deref probed 5000 ::hung)))
+          (is (= :unix/address-in-use (:error (deref bound 5000 {:error ::hung}))))
+          (testing "the socket file is still there"
+            (is (Files/exists (Path/of path (make-array String 0))
+                              (make-array LinkOption 0)))))
+        (finally
+          (doseq [^SocketChannel c fill] (.close c))
+          (unix/close-server! srv))))))
+
+(defn- path-of ^Path [s] (Path/of (str s) (make-array String 0)))
+(defn- exists? [s] (Files/exists (path-of s) (make-array LinkOption 0)))
+
+(deftest close-of-old-server-keeps-the-new-socket
+  (testing "point 2: close-server! never unlinks a socket that is no longer its own"
+    (let [path (sock "swap")
+          old  (:ok (unix/bind! path))]
+      ;; another starter replaced the path (old file gone, a new one bound)
+      (Files/delete (path-of path))
+      (let [new (echo-server path)]
+        (try
+          (is (= {:ok {:path path :unlinked? false}} (unix/close-server! old)))
+          (is (exists? path))
+          (is (= {:ok "echo:new"} (ask path "new")))
+          (finally ((:stop! new))))
+        (is (not (exists? path)) "the new server's own stop! unlinks it"))))
+  (testing "point 2: close-server! waits for the bind lock"
+    (let [path    (sock "locked")
+          srv     (:ok (unix/bind! path))
+          held    (java.util.concurrent.CountDownLatch. 1)
+          release (java.util.concurrent.CountDownLatch. 1)
+          holder  (future (#'unix/with-bind-lock (path-of (str path ".lock"))
+                                                 (fn [] (.countDown held) (.await release)
+                                                   {:ok nil})))]
+      (.await held)
+      (let [closing (future (unix/close-server! srv))]
+        (is (= ::waiting (deref closing 200 ::waiting)))
+        (is (exists? path))
+        (is (.isOpen ^java.nio.channels.ServerSocketChannel (:server-socket srv)))
+        (.countDown release)
+        @holder
+        (is (= {:ok {:path path :unlinked? true}} (deref closing 5000 ::hung)))
+        (is (not (exists? path)))))))
+
+(deftest dir-created-0700-at-create
+  (testing "point 3: every directory ensure-dir! creates is 0700 from the start"
+    (let [leaf (str *dir* "/a/b")]
+      (is (= {:ok {:path leaf}} (unix/ensure-dir! leaf)))
+      (is (= {:ok "rwx------"} (unix/mode-string (str *dir* "/a"))))
+      (is (= {:ok "rwx------"} (unix/mode-string leaf))))))
+
+(deftest dir-owner-check-fails-closed
+  (testing "point 4: a directory of another user is refused even when the uid is unknown"
+    (when-not (= "root" (System/getProperty "user.name"))
+      (with-redefs [unix/current-uid (constantly nil)]
+        (is (= :unix/dir-not-owned (:error (unix/ensure-dir! "/tmp")))))))
+  (testing "point 4: when the process owner cannot be learned, the directory is refused"
+    (when-not (= "root" (System/getProperty "user.name"))
+      (let [d (str *dir* "/ro")]
+        (Files/createDirectories (path-of d) (make-array FileAttribute 0))
+        (Files/setPosixFilePermissions (path-of d) (PosixFilePermissions/fromString "r-x------"))
+        (try
+          (is (= :unix/owner-unknown (:error (unix/ensure-dir! d))))
+          (is (= {:ok "r-x------"} (unix/mode-string d)) "left untouched")
+          (finally
+            (Files/setPosixFilePermissions (path-of d) (PosixFilePermissions/fromString "rwx------"))))))))
+
+(defn- mkfifo! [path]
+  (let [p (.start (ProcessBuilder. ^"[Ljava.lang.String;" (into-array String ["mkfifo" (str path)])))]
+    (zero? (.waitFor p))))
+
+(deftest fifo-is-not-a-socket
+  (testing "point 5: a FIFO is :not-socket, refused by bind! and never unlinked"
+    (let [path (sock "fifo")]
+      (Files/createDirectories (path-of (str *dir* "/run")) (make-array FileAttribute 0))
+      (is (mkfifo! path) "mkfifo must succeed for this test to mean anything")
+      (when (exists? path)
+        (is (= {:ok :not-socket} (unix/probe path)))
+        (is (= :unix/not-a-socket (:error (unix/bind! path))))
+        (is (exists? path))
+        (is (not (Files/getAttribute (path-of path) "unix:isRegularFile"
+                                     (make-array LinkOption 0))))))))
+
+(defn- open-client [path]
+  (let [ch  (:channel (:ok (unix/connect! path)))]
+    {:ch ch :rdr (unix/line-reader ch)}))
+
+(deftest stop-closes-accepted-connections
+  (testing "point 6: stop! closes connections the server has accepted"
+    (let [path (sock "conns")
+          srv  (echo-server path)
+          {:keys [^SocketChannel ch rdr]} (open-client path)]
+      (try
+        (unix/write-line! ch "hi")
+        (is (= {:ok "echo:hi"} (unix/read-line! rdr 2000)))
+        ((:stop! srv))
+        (is (= :frame/eof (:error (unix/read-line! rdr 2000))))
+        (is (= 0 ((:connections srv))))
+        (finally (.close ch))))))
+
+(deftest connection-cap
+  (testing "point 6: a connection over :max-connections is closed at once"
+    (let [path (sock "cap")
+          srv  (:ok (unix/serve-lines! path (fn [l] (str "echo:" l)) {:max-connections 1}))
+          a    (open-client path)
+          b    (atom nil)]
+      (try
+        (unix/write-line! (:ch a) "a")
+        (is (= {:ok "echo:a"} (unix/read-line! (:rdr a) 2000)))
+        (reset! b (open-client path))
+        ;; read without writing: a write to the closed peer could reset
+        ;; the stream instead of a clean EOF
+        (is (= :frame/eof (:error (unix/read-line! (:rdr @b) 2000))))
+        (testing "the first connection is still served"
+          (unix/write-line! (:ch a) "a2")
+          (is (= {:ok "echo:a2"} (unix/read-line! (:rdr a) 2000))))
+        (finally
+          (.close ^SocketChannel (:ch a))
+          (some-> @b :ch (#(.close ^SocketChannel %)))
+          ((:stop! srv)))))))
+
+(deftest idle-connection-closed
+  (testing "point 6: :idle-timeout-ms closes a silent connection"
+    (let [path (sock "idle")
+          srv  (:ok (unix/serve-lines! path (fn [l] (str "echo:" l)) {:idle-timeout-ms 100}))
+          {:keys [^SocketChannel ch rdr]} (open-client path)]
+      (try
+        (unix/write-line! ch "x")
+        (is (= {:ok "echo:x"} (unix/read-line! rdr 2000)))
+        (is (= :frame/eof (:error (unix/read-line! rdr 3000))))
+        (finally (.close ch) ((:stop! srv)))))))

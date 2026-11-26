@@ -1,0 +1,105 @@
+name: release-path
+
+# Publishes the light core (io.github.hive-agi/hive-system-path) from path/.
+#
+# A second coordinate from the same repository, versioned independently. The
+# root's release.yml never sees it: its `paths:` filter names src/, resources/,
+# deps.edn, version.edn and VERSION, and this module lives entirely under
+# path/. That separation is also why `path-v*` tags stay invisible to the root's
+# changelog generator, which reads `git tag --list "v*"` only.
+#
+# `clojure -T:build` acts on the directory it runs in, so one extra job with
+# working-directory: path publishes the second artifact. No build code is
+# duplicated: path/deps.edn points :build at the same hive-build task set.
+#
+# VERSION is PINNED here: path/VERSION is the version that ships, with no
+# implicit bump. A registry is immutable, so `deploy` HEAD-checks the
+# coordinate first and skips one that is already complete; a re-run of an
+# already-published VERSION therefore publishes nothing and tags nothing. To
+# release the module again, edit path/VERSION in the commit that changes it.
+#
+# Secrets (per-repo or hive-agi org-wide): CLOJARS_USERNAME, CLOJARS_DEPLOY_TOKEN.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'path/**'
+  workflow_dispatch:
+
+concurrency:
+  group: release-path-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: path
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Tags are this module's version ledger (path-v<version>), so the
+          # history must be complete for the tag check below to mean anything.
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.gitlibs
+            ~/.cpcache
+            path/.cpcache
+          key: release-path-${{ runner.os }}-${{ hashFiles('path/deps.edn') }}
+          restore-keys: |
+            release-path-${{ runner.os }}-
+
+      - uses: DeLaGuardo/setup-clojure@13.7.0
+        with:
+          cli: 1.12.7.1681
+
+      # Gate BEFORE the deploy: a published pom is immutable, so a red suite
+      # must not be able to ship a coordinate that can never be replaced.
+      - name: Test
+        run: clojure -M:test
+
+      - name: Deploy
+        env:
+          CLOJARS_USERNAME: ${{ secrets.CLOJARS_USERNAME }}
+          CLOJARS_PASSWORD: ${{ secrets.CLOJARS_DEPLOY_TOKEN }}
+        run: |
+          set -euo pipefail
+          clojure -T:build deploy | tee /tmp/deploy-path.log
+
+      - name: Tag the version this run published
+        working-directory: .
+        run: |
+          set -euo pipefail
+          VER=$(cat path/VERSION)
+          # `deploy` announces "Deployed <lib> <version> to clojars" only when
+          # it actually shipped; an already-published coordinate is reported as
+          # "Skip: ... already published". Tagging on the announcement keeps a
+          # no-op re-run from minting a second tag for the same version.
+          if ! grep -q "^Deployed " /tmp/deploy-path.log; then
+            echo "deploy published nothing (already on the registry); no tag."
+            exit 0
+          fi
+          git config user.name  "hive-ci"
+          git config user.email "ci@hive-agi.local"
+          if git show-ref --verify --quiet "refs/tags/path-v$VER"; then
+            test "$(git rev-parse "path-v$VER^{}")" = "$(git rev-parse HEAD)" || {
+              echo "path-v$VER already tags another commit" >&2; exit 1;
+            }
+          else
+            # Annotated: `git push --follow-tags` ignores lightweight tags,
+            # which would publish the artifact and silently drop the tag.
+            git tag -a "path-v$VER" -m "release hive-system-path $VER"
+            git push --follow-tags
+          fi

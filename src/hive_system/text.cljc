@@ -12,7 +12,8 @@
    a FINAL line terminator, so `#\"\\.clj$\"` is true on \"a.clj\\n\". These
    functions end at the end of the string. `re-matches` has no such quirk,
    and neither do paths, ids or tokens."
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str]
+            [hive-system.path :as p]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -45,10 +46,9 @@
 
 (defn under-path?
   "True when `path` is `root` or lies under it (`root/...`).
-   Replaces `#\"^root(/|$)\"`."
+   Replaces `#\"^root(/|$)\"`. Delegates to `hive-system.path/under?`."
   [path root]
-  (boolean (and (string? path) (string? root)
-                (or (= path root) (str/starts-with? path (str root "/"))))))
+  (p/under? path root))
 
 ;;; ===========================================================================
 ;;; Case and order

@@ -92,12 +92,14 @@ jobs:
       - name: Resolve declared classpath
         run: clojure -P
 
-      - name: Babashka tests (path, env, xdg)
+      - name: Babashka tests (the light core: path, env, xdg, text)
         run: |
           set -euo pipefail
           curl -fsSL -o /tmp/bb-install https://raw.githubusercontent.com/babashka/babashka/master/install
           sudo bash /tmp/bb-install
           bb --version
+          # The sources arrive from io.github.hive-agi/hive-system-path; the
+          # tests live in path/test, where the module keeps them.
           bb test:bb
 
       - name: Test

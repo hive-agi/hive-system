@@ -82,7 +82,10 @@
     "Create `path` and any missing parents; idempotent. Returns Result with {:path}."))
 
 (defprotocol IPathQuery
-  "Path predicates and resolution. Pure queries — no mutation.
+  "Path predicates and resolution. Read-only: nothing here mutates.
+   path-exists?, path-directory?, path-file? and path-children read the
+   filesystem; path-absolute? and path-resolve are lexical and touch no disk
+   (the pure algebra itself lives in hive-system.path).
    SRP: separated from IFilesystem (which handles watch/write/lock).
    All return Result for railway composition via ok->/let-ok."
   (path-exists? [this path]

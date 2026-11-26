@@ -92,6 +92,14 @@ jobs:
       - name: Resolve declared classpath
         run: clojure -P
 
+      - name: Babashka tests (path, env, xdg)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/bb-install https://raw.githubusercontent.com/babashka/babashka/master/install
+          sudo bash /tmp/bb-install
+          bb --version
+          bb test:bb
+
       - name: Test
         run: |
           set -euo pipefail

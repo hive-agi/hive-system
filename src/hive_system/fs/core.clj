@@ -17,7 +17,8 @@
             [hive-weave.parallel :as wp]
             [babashka.fs :as fs]
             [clojure.string :as str]
-            [taoensso.timbre :as log]))
+            [taoensso.timbre :as log]
+            [hive-system.path :as path]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -42,8 +43,7 @@
       (boolean (fs/regular-file? path))))
 
   (path-absolute? [_ path]
-    (try-effect* :fs/check-failed
-      (boolean (fs/absolute? path))))
+    (r/ok (path/absolute? (some-> path str))))
 
   (path-resolve [_ base segments]
     (try-effect* :fs/resolve-failed

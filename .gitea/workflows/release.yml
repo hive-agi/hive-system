@@ -1,0 +1,171 @@
+name: release
+
+# PINNED release: ./VERSION is tracked, so `bump` mints the next patch and the
+# run commits + tags it.
+#
+# Path-filtered to library sources so CI / README / test-only commits don't mint
+# an immutable pom.
+#
+# Secrets: MAVEN_USERNAME, MAVEN_TOKEN, MAVEN_URL — ORG-WIDE on hive-agi. NOT
+# GITEA_-prefixed (Gitea reserves that prefix).
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'src/**'
+      - 'resources/**'
+      - 'deps.edn'
+      # version.edn decides what the jar carries (:src-dirs, :publish),
+      # and VERSION is the release floor: both must be able to release.
+      - 'version.edn'
+      - 'VERSION'
+      # The suite gates the bump/deploy below, so a test-only change MUST be
+      # able to trigger a run: excluded here, a test fix can never be validated
+      # and a test-only regression stays invisible until an unrelated src push
+      # trips over it.
+      - 'test/**'
+      - 'tests.edn'
+      # Include the workflow itself so a change to the release pipeline is
+      # exercised by the very push that makes it, instead of lying dormant
+      # until the next unrelated src commit.
+      - '.gitea/workflows/**'
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # pinned mode pushes the VERSION bump + tag
+    env:
+      MAVEN_USERNAME: ${{ secrets.MAVEN_USERNAME }}
+      MAVEN_TOKEN: ${{ secrets.MAVEN_TOKEN }}
+      MAVEN_URL: ${{ secrets.MAVEN_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      # Caches the resolved dependency tree across runs, keyed on the files
+      # that declare it.
+      - name: Cache Maven and gitlibs
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.gitlibs
+          key: deps-${{ runner.os }}-${{ hashFiles('deps.edn', 'bb.edn') }}
+          restore-keys: |
+            deps-${{ runner.os }}-
+
+      # NOT DeLaGuardo/setup-clojure: that action calls the GitHub API
+      # unconditionally and authenticates with GITHUB_TOKEN, which under Gitea
+      # Actions is a Gitea token that github.com rejects. It logs ::error::
+      # without failing its own step, so the job continues with no Clojure on
+      # PATH and dies later with a bare exit 127, far from the cause.
+      #
+      # The official installer touches no API, so it behaves identically on
+      # both forges. `clojure --version` is the assertion.
+      - name: Setup Clojure CLI
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/clj-install.sh \
+            https://download.clojure.org/install/linux-install-1.12.7.1681.sh
+          chmod +x /tmp/clj-install.sh
+          sudo /tmp/clj-install.sh
+          clojure --version
+
+      # Give the resolver the private repo + credentials before any clojure cmd.
+      - name: Materialize private-registry resolution credentials
+        if: env.MAVEN_TOKEN != ''
+        run: |
+          # Mirror the clojure launcher's own resolution: $CLJ_CONFIG, else
+          # $XDG_CONFIG_HOME/clojure when set, else $HOME/.clojure.
+          CLJ_CONFIG="${CLJ_CONFIG:-${XDG_CONFIG_HOME:+$XDG_CONFIG_HOME/clojure}}"
+          CLJ_CONFIG="${CLJ_CONFIG:-$HOME/.clojure}"
+          mkdir -p "$CLJ_CONFIG" "$HOME/.m2"
+          cat > "$CLJ_CONFIG/deps.edn" <<'EOF'
+          {:mvn/repos {"hive-gitea" {:url "https://gitea.hive-mcp.com/api/packages/hive-agi/maven"}}}
+          EOF
+          cat > "$HOME/.m2/settings.xml" <<EOF
+          <settings>
+            <servers>
+              <server>
+                <id>hive-gitea</id>
+                <username>${MAVEN_USERNAME}</username>
+                <password>${MAVEN_TOKEN}</password>
+              </server>
+            </servers>
+          </settings>
+          EOF
+
+      # Licence gate. LICENSE, version.edn :license and the src SPDX headers
+      # must agree, and a published pom can never be retracted, so drift has to
+      # stop the run rather than scroll past as a warning. `:strict true` throws
+      # on hive-build >= the release that added it; the grep keeps an older
+      # pinned hive-build (which ignores :strict and only warns) failing too.
+      - name: Verify licence
+        run: |
+          set -euo pipefail
+          out=$(clojure -T:build verify-license :strict true 2>&1) || { printf '%s\n' "$out"; exit 1; }
+          printf '%s\n' "$out"
+          if printf '%s\n' "$out" | grep -q 'WARNING: license inconsistency'; then
+            echo "::error::licence drift: LICENSE, version.edn and SPDX headers disagree"
+            exit 1
+          fi
+
+      # Gate BEFORE the bump: a published pom is immutable, so a red suite must
+      # not be able to mint a version, tag it and ship it.
+      - name: Test
+        run: |
+          if [ -d test ]; then
+            clojure -M:test
+          else
+            echo "no test/ directory — nothing to gate on"
+          fi
+
+      # The release number comes from the tags, not from a commit back to main.
+      # VERSION in the tree is a FLOOR (raise it in a staging PR to open a new
+      # minor line); this run releases patch+1 of max(VERSION, newest v* tag).
+      - name: Resolve release base from tags
+        run: |
+          set -euo pipefail
+          FLOOR=$(tr -d '[:space:]' < VERSION)
+          LAST=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -n1 | sed 's/^v//')
+          BASE=$(printf '%s\n%s\n' "$FLOOR" "${LAST:-$FLOOR}" | sort -V | tail -n1)
+          echo "VERSION floor $FLOOR, newest tag ${LAST:-none}: base $BASE"
+          printf '%s\n' "$BASE" > VERSION
+
+      - name: Bump patch version
+        run: clojure -T:build bump :level :patch
+
+      # `deploy` reads version.edn :publish (:gitea). Idempotent — a re-run at a
+      # version already in the registry HEAD-checks and skips.
+      - name: Deploy
+        if: env.MAVEN_TOKEN != ''
+        run: clojure -T:build deploy
+
+      # After Deploy: a tag means "this version is in the registry".
+      - name: Tag
+        if: env.MAVEN_TOKEN != ''
+        run: |
+          set -euo pipefail
+          VER=$(tr -d '[:space:]' < VERSION)
+          git config user.name  "hive-ci"
+          git config user.email "ci@hive-agi.local"
+          # Tag only, no commit: a version-bump commit on main is one staging
+          # lacks, and it made every next staging->main PR conflict in VERSION.
+          # Annotated, so the next run's tag scan and `git describe` see it.
+          git tag -a "v$VER" -m "release $VER"
+          git push origin "refs/tags/v$VER"

@@ -92,7 +92,7 @@ jobs:
       - name: Resolve declared classpath
         run: clojure -P
 
-      - name: Babashka tests (the light core: path, env, xdg, text)
+      - name: "Babashka tests (the light core: path, env, xdg, text)"
         run: |
           set -euo pipefail
           curl -fsSL -o /tmp/bb-install https://raw.githubusercontent.com/babashka/babashka/master/install

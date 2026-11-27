@@ -9,7 +9,8 @@
             [hive-test.properties :refer [defprop-total defprop-idempotent]]
             [hive-dsl.result :as r]
             [hive-system.shell.tools :as tools]
-            [hive-system.shell.detect :as detect]))
+            [hive-system.shell.detect :as detect]
+            [clojure.string :as str]))
 
 ;; =============================================================================
 ;; Golden: Lock down tool registry structure
@@ -145,7 +146,7 @@
       (is (= :tool/missing (:error res)))
       (is (= ["fd" "fdfind"] (:tried res))
           "the refusal names both, so 'not installed' is a claim it can back")
-      (is (re-find #"fd / fdfind" (:message res))))))
+      (is (str/includes? (:message res) "fd / fdfind")))))
 
 (deftest the-alt-name-is-load-bearing-and-not-decoration
   ;; Negative control: drop the alts and the Debian-installed tool goes missing.

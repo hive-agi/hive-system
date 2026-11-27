@@ -10,7 +10,8 @@
             [hive-test.properties :refer [defprop-total defprop-complement]]
             [hive-dsl.result :as r]
             [hive-system.shell.core :as sh]
-            [hive-system.protocols :as proto]))
+            [hive-system.protocols :as proto]
+            [clojure.string :as str]))
 
 (deftrifecta unknown-options-trifecta
   #'hive-system.shell.core/unknown-option
@@ -153,7 +154,7 @@
       (is (= :shell/timeout (:error result)))
       (is (= "step-one\n" (:stdout result)))
       (is (= "warn-one\n" (:stderr result)))
-      (is (not (re-find #"never" (str (:stdout result))))))))
+      (is (not (str/includes? (str (:stdout result)) "never"))))))
 
 ;; =============================================================================
 ;; Unit: exec! with vector command (no shell interpretation)

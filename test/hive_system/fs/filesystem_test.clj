@@ -6,7 +6,8 @@
             [hive-dsl.result :as r]
             [hive-system.fs.core :as fsq]
             [hive-system.fs.filesystem :as sut]
-            [hive-system.protocols :as proto]))
+            [hive-system.protocols :as proto]
+            [clojure.string :as str]))
 
 (def ^:dynamic *root* nil)
 
@@ -56,7 +57,7 @@
       (is (true? (:ok (fsq/directory? a))))
       (is (true? (:ok (fsq/directory? b))))
       (is (not= a b) "two calls must not collide")
-      (is (re-find #"hs-a-" (str (fs/file-name a))) "the prefix is honoured")
+      (is (str/includes? (str (fs/file-name a)) "hs-a-") "the prefix is honoured")
       (finally (fs/delete-tree a) (fs/delete-tree b)))))
 
 (deftest tmpdir-works-without-a-prefix
@@ -80,7 +81,7 @@
     (ok! (sut/atomic-write! p "first"))
     (ok! (sut/atomic-write! p "second"))
     (is (= "second" (slurp p)))
-    (is (empty? (filter #(re-find #"^\.hs-" (str (fs/file-name %)))
+    (is (empty? (filter #(str/starts-with? (str (fs/file-name %)) ".hs-")
                         (fs/list-dir *root*)))
         "the sibling temp file must not survive a successful write")))
 
@@ -115,7 +116,7 @@
     (is (r/err? res))
     (is (= :fs/atomic-write-failed (:error res)))
     (is (not (fs/exists? p)) "the target must not appear")
-    (is (empty? (filter #(re-find #"^\.hs-" (str (fs/file-name %)))
+    (is (empty? (filter #(str/starts-with? (str (fs/file-name %)) ".hs-")
                         (fs/list-dir *root*)))
         "the temp file must not survive the failure")))
 

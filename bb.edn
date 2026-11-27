@@ -1,0 +1,16 @@
+{:paths ["src" "test" "path/test"]
+ :deps {io.github.hive-agi/hive-system-path {:mvn/version "0.1.0"}
+        metosin/malli {:mvn/version "0.20.3"}
+        org.clojure/test.check {:mvn/version "1.1.3"}
+        io.github.hive-agi/hive-dsl {:mvn/version "0.6.2"}
+        io.github.hive-agi/hive-test {:mvn/version "0.5.2"}
+        io.github.hive-agi/hive-schemas {:mvn/version "0.2.2"}}
+ :tasks
+ {test:bb
+  {:doc "Run the light core's test namespaces under babashka; exit 1 on any failure or error. The sources come from hive-system-path; the tests are read from path/test, which is where the module keeps them."
+   :requires ([clojure.test :as t])
+   :task (let [nses '[hive-system.path-test hive-system.env-test hive-system.xdg-test hive-system.text-test]]
+           (apply require nses)
+           (let [{:keys [fail error]} (apply t/run-tests nses)]
+             (when (pos? (+ fail error))
+               (System/exit 1))))}}}

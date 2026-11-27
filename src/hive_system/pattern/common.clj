@@ -25,6 +25,14 @@
 
 (defn- hex [n] [:repeat hex-digit n n])
 
+(def ^:private hex-digit-ci
+  "Lower- and upper-case hex: [0-9a-fA-F], for the case-tolerant UUID sibling."
+  [:class [\0 \9] [\a \f] [\A \F]])
+
+(defn- hex-ci
+  "A repeat of `hex-digit-ci` exactly N times."
+  [n] [:repeat hex-digit-ci n n])
+
 (defn- whole [& forms] (into [:cat :start] (conj (vec forms) :end)))
 
 (def ^:private ascii-whitespace
@@ -72,7 +80,24 @@
                             :doc  "A whole 32-digit lower-case hex id."}
    :hive.pattern/uuid      {:form (whole (hex 8) "-" (hex 4) "-" (hex 4) "-" (hex 4) "-" (hex 12))
                             :replaces "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-                            :doc  "A whole lower-case UUID."}
+                            :doc  "A whole lower-case UUID. Strict: upper case is REFUSED; use :hive.pattern/uuid-anywhere for a case-insensitive or embedded match."}
+   :hive.pattern/hex64-anywhere
+   {:form (hex 64) :replaces-find "[0-9a-f]{64}"
+    :doc  "A SHA-256 digest ANYWHERE in the subject — the unanchored sibling of :hive.pattern/hex64 (funeraria audit D8)."}
+   :hive.pattern/hex40-anywhere
+   {:form (hex 40) :replaces-find "[0-9a-f]{40}"
+    :doc  "A git object id (SHA-1) ANYWHERE in the subject — the unanchored sibling of :hive.pattern/hex40."}
+   :hive.pattern/hex32-anywhere
+   {:form (hex 32) :replaces-find "[0-9a-f]{32}"
+    :doc  "A 32-digit lower-case hex id ANYWHERE in the subject — the unanchored sibling of :hive.pattern/hex32."}
+   :hive.pattern/uuid-anywhere
+   {:form [:cat (hex-ci 8) "-" (hex-ci 4) "-" (hex-ci 4) "-" (hex-ci 4) "-" (hex-ci 12)]
+    :replaces-find "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    :flags #{:case-insensitive}
+    :doc  "A UUID ANYWHERE in the subject, either case — the unanchored sibling of :hive.pattern/uuid (funeraria audit D7). Carries :flags #{:case-insensitive}; the class spells both cases too, so the emitted source is explicit."}
+   :hive.pattern/sha256-prefixed
+   {:form (whole "sha256:" (hex 64)) :replaces "^sha256:[0-9a-f]{64}$"
+    :doc  "A whole content digest with its algorithm prefix: `sha256:` then a lower-case 64-hex digest."}
    :hive.pattern/memory-id {:form (whole [:repeat :digit 14 14] "-" (hex 8))
                             :replaces "^\\d{14}-[0-9a-f]{8}$"
                             :doc  "A whole hive memory entry id: 14 digits, a dash, 8 hex digits."}

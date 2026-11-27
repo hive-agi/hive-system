@@ -108,3 +108,49 @@
     (is (false? (:ok (common/matches? :hive.pattern/digits-anywhere "abc" {:mode :find})))))
   (testing "the anchored :hive.pattern/digits still refuses embedded digits"
     (is (false? (common/matches? :hive.pattern/digits "a12")))))
+
+(deftest anywhere-siblings-match-an-id-embedded-in-text
+  (let [h64 (apply str (repeat 64 "a"))
+        h40 (apply str (repeat 40 "a"))
+        h32 (apply str (repeat 32 "a"))
+        uuid "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"]
+    (testing "a valid id surrounded by text is found under :mode :find"
+      (doseq [[id body] [[:hive.pattern/hex64-anywhere (str "blob " h64 " done")]
+                         [:hive.pattern/hex40-anywhere (str "commit=" h40 ";")]
+                         [:hive.pattern/hex32-anywhere (str "(" h32 ")")]
+                         [:hive.pattern/uuid-anywhere (str "id: " uuid " .")]]]
+        (is (true? (:ok (common/matches? id body {:mode :find}))) (str id " " body))))
+    (testing "and the anchored parent still refuses the embedded form"
+      (is (false? (common/matches? :hive.pattern/hex64 (str "blob " h64 " done"))))
+      (is (false? (common/matches? :hive.pattern/uuid (str "id: " uuid " .")))))))
+
+(deftest anywhere-siblings-reject-a-one-char-short-near-miss
+  (let [short64 (apply str (repeat 63 "a"))
+        short40 (apply str (repeat 39 "a"))
+        short32 (apply str (repeat 31 "a"))]
+    (doseq [[id body] [[:hive.pattern/hex64-anywhere (str "x" short64 "y")]
+                       [:hive.pattern/hex40-anywhere (str "x" short40 "y")]
+                       [:hive.pattern/hex32-anywhere (str "x" short32 "y")]]]
+      (is (false? (:ok (common/matches? id body {:mode :find}))) (str id " " body)))))
+
+(deftest uuid-anywhere-is-case-tolerant-but-uuid-is-not
+  (let [lower "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
+        upper (str/upper-case lower)]
+    (testing "uuid-anywhere carries :flags #{:case-insensitive}"
+      (is (= #{:case-insensitive} (:flags (get common/catalog :hive.pattern/uuid-anywhere)))))
+    (testing "uuid-anywhere accepts either case, embedded"
+      (is (true? (:ok (common/matches? :hive.pattern/uuid-anywhere (str "id " upper " x") {:mode :find})))))
+    (testing "the strict :hive.pattern/uuid still REFUSES upper case"
+      (is (false? (common/matches? :hive.pattern/uuid upper)))
+      (is (true? (common/matches? :hive.pattern/uuid lower))))))
+
+(deftest sha256-prefixed-is-anchored-and-needs-its-prefix
+  (let [digest (apply str (repeat 64 "a"))]
+    (testing "the prefixed form is whole-string: a bare digest is refused"
+      (is (true? (common/matches? :hive.pattern/sha256-prefixed (str "sha256:" digest))))
+      (is (false? (common/matches? :hive.pattern/sha256-prefixed digest))))
+    (testing "a one-char-short digest is refused"
+      (is (false? (common/matches? :hive.pattern/sha256-prefixed (str "sha256:" (apply str (repeat 63 "a")))))))
+    (testing "it declares no unanchored variant"
+      (is (= :pattern/no-find-variant
+             (:error (common/matches? :hive.pattern/sha256-prefixed digest {:mode :find})))))))

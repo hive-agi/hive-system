@@ -32,19 +32,24 @@
   [:class \space \tab \newline \u000B \formfeed \return])
 
 (def CatalogEntry
-  "One catalog entry, as a CLOSED map \u2014 an unrecognized key is a defect, not an
-   extension point. `:form` is the regal construct; `:replaces` is the anchored
-   Java source it compiles to (the golden test pins the two). `:replaces-find`
-   is the OPTIONAL unanchored source a `re-find` site matches; `:aliases` are
-   OPTIONAL semantically EQUAL sources (same matches, so a rewrite cannot change
-   behaviour); `:flags` is an OPTIONAL set threaded into the Pattern."
-  [:map {:closed true}
-   [:form :any]
-   [:doc :string]
-   [:replaces :string]
-   [:replaces-find {:optional true} :string]
-   [:aliases {:optional true} [:vector :string]]
-   [:flags {:optional true} [:set ps/Flag]]])
+  "One catalog entry, as a CLOSED map — an unrecognized key is a defect, not an
+   extension point. `:form` is the regal construct. At least ONE of `:replaces`
+   (the anchored Java source) or `:replaces-find` (the unanchored source) is
+   present; an anchored concept carries `:replaces` (pinned by the golden test to
+   the construct) and an `-anywhere` sibling may carry only `:replaces-find`.
+   `:aliases` are OPTIONAL semantically EQUAL sources (same matches, so a rewrite
+   cannot change behaviour); `:flags` is an OPTIONAL set threaded into the
+   Pattern."
+  [:and
+   [:map {:closed true}
+    [:form :any]
+    [:doc :string]
+    [:replaces {:optional true} :string]
+    [:replaces-find {:optional true} :string]
+    [:aliases {:optional true} [:vector :string]]
+    [:flags {:optional true} [:set ps/Flag]]]
+   [:fn {:error/message "a catalog entry needs :replaces or :replaces-find"}
+    (fn [entry] (or (:replaces entry) (:replaces-find entry)))]])
 
 (defn catalog-entry-valid?
   "True when ENTRY satisfies `CatalogEntry`. The gate the catalog's own test
@@ -73,12 +78,16 @@
                             :doc  "A whole hive memory entry id: 14 digits, a dash, 8 hex digits."}
    :hive.pattern/digits    {:form (whole [:+ :digit]) :replaces "^\\d+$"
                             :doc  "A whole run of decimal digits."}
+   :hive.pattern/digits-anywhere
+   {:form [:+ :digit] :replaces-find "\\d+"
+    :doc  "A run of decimal digits ANYWHERE in the subject — the unanchored sibling of :hive.pattern/digits, for the `re-find #\"\\d+\"` sites (37 in hive)."}
    :hive.pattern/slug      {:form (whole [:class [\a \z]] [:* [:class [\a \z] [\0 \9] \-]])
                             :replaces "^[a-z][a-z0-9\\-]*$"
                             :doc  "A whole lower-case slug: a letter, then letters, digits and dashes."}
    :hive.pattern/ws-run    {:form [:+ ascii-whitespace]
                             :replaces "[ \t\n\u000B\f\r]+"
-                            :doc  "A run of ASCII whitespace, exactly Java's `\\s+`. The emitter writes the control characters raw, so `:replaces` holds them raw too."}})
+                            :aliases ["\\s+" "[\\s]+"]
+                            :doc  "A run of ASCII whitespace, exactly Java's `\\s+`. The emitter writes the control characters raw, so `:replaces` holds them raw too. `\\s+` and `[\\s]+` are aliases: Java's `\\s` IS `[ \t\n\u000B\f\r]`, so they match the same strings and a rewrite cannot change behaviour. `\\s` alone (one char) and `[ \t]+` (no newline) are NOT aliases — they are separate clusters and get no entry unless they meet the bar on their own."}})
 
 (defn register-all!
   "Register every `catalog` entry. Returns {id Result<Pattern>}."

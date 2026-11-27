@@ -16,9 +16,11 @@
     (is (contains? result :ok) (str id " " (pr-str result)))))
 
 (deftest every-construct-is-the-literal-it-replaces
-  (doseq [[id {:keys [form replaces]}] common/catalog]
+  (doseq [[id {:keys [form replaces replaces-find]}] common/catalog]
     (testing (str id)
-      (is (= {:ok replaces} (api/->expr :java form))))))
+      ;; an entry with only an unanchored form (a `-anywhere` sibling) compiles
+      ;; to :replaces-find; the rest to the anchored :replaces
+      (is (= {:ok (or replaces replaces-find)} (api/->expr :java form))))))
 
 (def ^:private subject
   (gen/one-of
@@ -29,9 +31,9 @@
                          (gen/fmap str/join (gen/vector (gen/elements ["a" "0" "g"]) 8))))]))
 
 (defspec matches-agrees-with-the-regex-it-replaces 500
-  (prop/for-all [[id {:keys [replaces]}] (gen/elements (seq common/catalog))
+  (prop/for-all [[id {:keys [replaces replaces-find]}] (gen/elements (seq common/catalog))
                  s subject]
-    (= (boolean (re-find (re-pattern replaces) s))
+    (= (boolean (re-find (re-pattern (or replaces replaces-find)) s))
        (common/matches? id s))))
 
 (deftest matches-is-total
@@ -70,3 +72,39 @@
   (testing "an unsupported flag is a refusal, never dropped"
     (is (= :pattern/unsupported-flag
            (:error (common/matches? :hive.pattern/slug "abc" {:flags #{:nonsense}}))))))
+
+(deftest ws-run-aliases-are-exactly-the-semantically-equal-sources
+  (let [entry (get common/catalog :hive.pattern/ws-run)]
+    (testing "only the two EQUAL spellings are aliases"
+      (is (= ["\\s+" "[\\s]+"] (:aliases entry))))
+    (testing "a one-char `\\s` and a newline-less `[ \t]+` are NOT aliases"
+      (is (not (contains? (set (:aliases entry)) "\\s")))
+      (is (not (contains? (set (:aliases entry)) "[ \\t]+"))))))
+
+(deftest ws-run-aliases-are-differentially-equal-to-replaces
+  (let [replaces (:replaces (get common/catalog :hive.pattern/ws-run))
+        aliases  (:aliases (get common/catalog :hive.pattern/ws-run))]
+    (doseq [alias aliases
+            s (gen/sample subject 200)]
+      (is (= (re-seq (re-pattern replaces) s)
+             (re-seq (re-pattern alias) s))
+          (str alias " " (pr-str s))))))
+
+(deftest ws-run-non-aliases-are-shown-not-equal
+  (let [replaces (:replaces (get common/catalog :hive.pattern/ws-run))]
+    (testing "`\\s` is one char: a run of two spaces splits differently"
+      (is (not= (re-seq (re-pattern "\\s") "a  b")
+                (re-seq (re-pattern replaces) "a  b"))))
+    (testing "`[ \\t]+` has no newline: a newline run is not a whitespace run to it"
+      (is (not= (re-seq (re-pattern "[ \\t]+") "a\nb")
+                (re-seq (re-pattern replaces) "a\nb"))))))
+
+(deftest digits-anywhere-is-unanchored
+  (testing "the unanchored sibling matches digits embedded in text"
+    (is (true? (common/matches? :hive.pattern/digits-anywhere "a12")))
+    (is (true? (:ok (common/matches? :hive.pattern/digits-anywhere "a12" {:mode :find})))))
+  (testing "and rejects a subject with no digit"
+    (is (false? (common/matches? :hive.pattern/digits-anywhere "abc")))
+    (is (false? (:ok (common/matches? :hive.pattern/digits-anywhere "abc" {:mode :find})))))
+  (testing "the anchored :hive.pattern/digits still refuses embedded digits"
+    (is (false? (common/matches? :hive.pattern/digits "a12")))))

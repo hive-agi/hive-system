@@ -39,3 +39,34 @@
   (is (false? (common/matches? :hive.pattern/no-such-id "abc")))
   (is (true? (common/matches? :hive.pattern/digits "20261126")))
   (is (true? (common/matches? :hive.pattern/memory-id "20261126111610-72bb520b"))))
+
+(deftest every-catalog-entry-satisfies-its-schema
+  (doseq [[id entry] common/catalog]
+    (is (common/catalog-entry-valid? entry) (str id " " (pr-str entry)))))
+
+(deftest mode-find-refuses-an-entry-with-no-unanchored-source
+  (testing "a missing :replaces-find is refused, never silently anchored"
+    (is (= {:error :pattern/no-find-variant :id :hive.pattern/hex64}
+           (common/matches? :hive.pattern/hex64 (apply str (repeat 64 "a")) {:mode :find}))))
+  (testing "an unknown id under opts is refused"
+    (is (= :pattern/unknown (:error (common/matches? :hive.pattern/no-such-id "x" {:mode :find})))))
+  (testing "a non-string subject is a false under opts, not an error"
+    (is (= {:ok false} (common/matches? :hive.pattern/digits nil {:mode :find})))))
+
+(deftest mode-find-agrees-with-the-unanchored-regex-it-replaces
+  (let [entries (filter (fn [[_ e]] (:replaces-find e)) common/catalog)]
+    (if (empty? entries)
+      (is true "no entry declares :replaces-find yet: the differential is vacuous")
+      (doseq [s (gen/sample subject 200)
+              [id {:keys [replaces-find]}] entries]
+        (is (= (boolean (re-find (re-pattern replaces-find) s))
+               (true? (:ok (common/matches? id s {:mode :find}))))
+            (str id " " (pr-str s)))))))
+
+(deftest flags-pass-through-and-an-unsupported-flag-refuses
+  (testing "a :flags option reaches the engine: a lower-case slug accepts upper case under :case-insensitive"
+    (is (false? (common/matches? :hive.pattern/slug "ABC")))
+    (is (= {:ok true} (common/matches? :hive.pattern/slug "ABC" {:flags #{:case-insensitive}}))))
+  (testing "an unsupported flag is a refusal, never dropped"
+    (is (= :pattern/unsupported-flag
+           (:error (common/matches? :hive.pattern/slug "abc" {:flags #{:nonsense}}))))))

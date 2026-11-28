@@ -24,7 +24,7 @@
 
 (def ^:private subject
   (gen/one-of
-   [(gen/fmap str/join (gen/vector (gen/elements ["0" "9" "a" "f" "g" "A" "-" " " "\t" "z"]) 0 70))
+   [(gen/fmap str/join (gen/vector (gen/elements ["0" "9" "a" "f" "g" "A" "-" " " "\t" "\n" "\u000B" "\f" "\r" "z" "!"]) 0 70))
     (gen/fmap (fn [n] (apply str (repeat n "a"))) (gen/elements [8 12 16 32 40 64 65]))
     (gen/fmap (fn [[d h]] (str d "-" h))
               (gen/tuple (gen/fmap str/join (gen/vector (gen/elements ["1" "2" "x"]) 14))
@@ -69,8 +69,8 @@
   (testing "a :flags option reaches the engine: a lower-case slug accepts upper case under :case-insensitive"
     (is (false? (common/matches? :hive.pattern/slug "ABC")))
     (is (= {:ok true} (common/matches? :hive.pattern/slug "ABC" {:flags #{:case-insensitive}}))))
-  (testing "an unsupported flag is a refusal, never dropped"
-    (is (= :pattern/unsupported-flag
+  (testing "a flag outside the Flag enum is caught at opts validation, never dropped"
+    (is (= :pattern/bad-opts
            (:error (common/matches? :hive.pattern/slug "abc" {:flags #{:nonsense}}))))))
 
 (deftest ws-run-aliases-are-exactly-the-semantically-equal-sources
@@ -154,3 +154,36 @@
     (testing "it declares no unanchored variant"
       (is (= :pattern/no-find-variant
              (:error (common/matches? :hive.pattern/sha256-prefixed digest {:mode :find})))))))
+
+(deftest bad-opts-stays-on-the-result-railway
+  (testing "a :flags that is not a set of Flags is REFUSED, never thrown"
+    (is (= :pattern/bad-opts
+           (:error (common/matches? :hive.pattern/slug "abc" {:flags :case-insensitive}))))
+    (is (= :pattern/bad-opts
+           (:error (common/matches? :hive.pattern/slug "abc" {:flags 1})))))
+  (testing "an unknown :mode is REFUSED, never a silent fall-back to the anchored source"
+    (is (= :pattern/bad-opts
+           (:error (common/matches? :hive.pattern/digits-anywhere "a12" {:mode :bogus})))))
+  (testing "the refusal carries the malformed opts and the malli explanation"
+    (let [result (common/matches? :hive.pattern/slug "abc" {:flags 1})]
+      (is (= {:flags 1} (:opts result)))
+      (is (= [:flags] (-> result :explain :errors first :path)))))
+  (testing "nil and {} still mean the default"
+    (is (= {:ok true} (common/matches? :hive.pattern/digits "2026" nil)))
+    (is (= {:ok true} (common/matches? :hive.pattern/digits "2026" {})))))
+
+(deftest ws-run-golden-the-vertical-tab-and-friends-are-a-whitespace-run
+  (let [entry    (get common/catalog :hive.pattern/ws-run)
+        replaces (:replaces entry)
+        sources  (into [replaces] (:aliases entry))]
+    (testing "every ASCII whitespace code point is a WHOLE run under :replaces and both aliases"
+      (doseq [ch ["\u000B" "\n" "\f" "\r" " " "\t"]
+              src sources]
+        (is (true? (boolean (re-matches (re-pattern src) ch)))
+            (str (pr-str ch) " against " (pr-str src)))))
+    (testing "and the catalog agrees: matches? finds a vertical tab"
+      (is (true? (common/matches? :hive.pattern/ws-run "\u000B"))))
+    (testing "a non-whitespace char is not a run under any equal source"
+      (doseq [src sources]
+        (is (false? (boolean (re-matches (re-pattern src) "!")))
+            (str "! against " (pr-str src)))))))

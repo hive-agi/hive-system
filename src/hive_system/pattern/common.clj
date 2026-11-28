@@ -143,6 +143,16 @@
 
 (m/=> select-source [:=> [:cat :keyword :any [:map]] :any])
 
+(def MatchesOpts
+  "The OPTS of the `[id s opts]` arity, as a CLOSED map. `:mode` is `:find` or
+   absent; `:flags` is a set of supported `Flag` values or absent. A key the
+   schema does not name, a `:mode` that is not `:find`, or a `:flags` that is not
+   a set of Flags is REFUSED as `:pattern/bad-opts` with the malli explanation —
+   never thrown, never silently ignored. `nil` and `{}` both mean the default."
+  [:map {:closed true}
+   [:mode {:optional true} [:enum :find]]
+   [:flags {:optional true} [:set ps/Flag]]])
+
 (defn matches?
   "True when the catalog pattern `id` occurs in `s`. A non-string `s` is false.
    An id outside the registry is false too; `catalog-registered?` is the test
@@ -154,7 +164,12 @@
      (matches? :hive.pattern/digits-anywhere s {:mode :find})
      (matches? :hive.pattern/uuid s {:flags #{:case-insensitive}})
 
-   `:mode :find` matches the entry's `:replaces-find` \u2014 its unanchored form \u2014
+   OPTS is validated against `MatchesOpts` before anything else, so a malformed
+   map is REFUSED as `:pattern/bad-opts` carrying the malli explanation — the
+   call stays on the Result railway and never throws, never falls back. `nil` and
+   `{}` both mean the default.
+
+   `:mode :find` matches the entry's `:replaces-find` — its unanchored form —
    and REFUSES with `:pattern/no-find-variant` when the entry declares none,
    because a concept with no unanchored form must not be searched unanchored by
    accident. `:flags` are threaded into the Pattern before `compile-pattern`,
@@ -163,14 +178,16 @@
   ([id s]
    (boolean (and (string? s) (true? (:ok (p/match? id s))))))
   ([id s opts]
-   (if-not (string? s)
-     (r/ok false)
-     (let [entry (get catalog id)
-           fs    (into (or (:flags entry) #{}) (or (:flags opts) #{}))]
-       (r/let-ok [src (select-source id entry opts)]
-                 (p/match? (cond-> {:pattern/expr src}
-                             (seq fs) (assoc :pattern/flags fs))
-                           s))))))
+   (if-let [explain (and (some? opts) (m/explain MatchesOpts opts))]
+     (r/err :pattern/bad-opts {:id id :opts opts :explain explain})
+     (if-not (string? s)
+       (r/ok false)
+       (let [entry (get catalog id)
+             fs    (into (or (:flags entry) #{}) (or (:flags opts) #{}))]
+         (r/let-ok [src (select-source id entry opts)]
+                   (p/match? (cond-> {:pattern/expr src}
+                               (seq fs) (assoc :pattern/flags fs))
+                             s)))))))
 
 (defn catalog-registered?
   "True when every `catalog` id resolves in the live registry."

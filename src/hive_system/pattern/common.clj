@@ -12,7 +12,10 @@
    literals reads `:replaces` to recognize a literal it can name."
   (:require [hive-system.pattern.construct.api :as api]
             [hive-system.pattern.core :as p]
-            [hive-system.pattern.registry :as registry]))
+            [hive-system.pattern.registry :as registry]
+            [hive-system.pattern.schema :as ps]
+            [malli.core :as m]
+            [hive-dsl.result :as r]))
 
 ;; Copyright (C) 2026 Pedro Gomes Branquinho (BuddhiLW) <pedrogbranquinho@gmail.com>
 ;;
@@ -22,14 +25,53 @@
 
 (defn- hex [n] [:repeat hex-digit n n])
 
+(def ^:private hex-digit-ci
+  "Lower- and upper-case hex: [0-9a-fA-F], for the case-tolerant UUID sibling."
+  [:class [\0 \9] [\a \f] [\A \F]])
+
+(defn- hex-ci
+  "A repeat of `hex-digit-ci` exactly N times."
+  [n] [:repeat hex-digit-ci n n])
+
 (defn- whole [& forms] (into [:cat :start] (conj (vec forms) :end)))
 
 (def ^:private ascii-whitespace
   "Java's `\\s`, which is ASCII only; regal's `:whitespace` is Unicode-wide."
   [:class \space \tab \newline \u000B \formfeed \return])
 
+(def CatalogEntry
+  "One catalog entry, as a CLOSED map — an unrecognized key is a defect, not an
+   extension point. `:form` is the regal construct. At least ONE of `:replaces`
+   (the anchored Java source) or `:replaces-find` (the unanchored source) is
+   present; an anchored concept carries `:replaces` (pinned by the golden test to
+   the construct) and an `-anywhere` sibling may carry only `:replaces-find`.
+   `:aliases` are OPTIONAL semantically EQUAL sources (same matches, so a rewrite
+   cannot change behaviour); `:flags` is an OPTIONAL set threaded into the
+   Pattern."
+  [:and
+   [:map {:closed true}
+    [:form :any]
+    [:doc :string]
+    [:replaces {:optional true} :string]
+    [:replaces-find {:optional true} :string]
+    [:aliases {:optional true} [:vector :string]]
+    [:flags {:optional true} [:set ps/Flag]]]
+   [:fn {:error/message "a catalog entry needs :replaces or :replaces-find"}
+    (fn [entry] (or (:replaces entry) (:replaces-find entry)))]])
+
+(defn catalog-entry-valid?
+  "True when ENTRY satisfies `CatalogEntry`. The gate the catalog's own test
+   runs, so a typo'd key is caught at the source rather than at a call site."
+  [entry]
+  (m/validate CatalogEntry entry))
+
+(m/=> catalog-entry-valid? [:=> [:cat :any] :boolean])
+
 (def catalog
-  "id -> {:form regal-construct :doc string :replaces java-regex-source}."
+  "id -> `CatalogEntry`: the regal construct, a doc, the anchored `:replaces`,
+   and — optionally — an unanchored `:replaces-find`, semantically EQUAL
+   `:aliases`, and a `:flags` set. The carto recipe that rewrites literals reads
+   `:replaces` and `:replaces-find` to recognize a literal it can name."
   {:hive.pattern/hex64     {:form (whole (hex 64)) :replaces "^[0-9a-f]{64}$"
                             :doc  "A whole SHA-256 digest in lower-case hex."}
    :hive.pattern/hex40     {:form (whole (hex 40)) :replaces "^[0-9a-f]{40}$"
@@ -38,18 +80,39 @@
                             :doc  "A whole 32-digit lower-case hex id."}
    :hive.pattern/uuid      {:form (whole (hex 8) "-" (hex 4) "-" (hex 4) "-" (hex 4) "-" (hex 12))
                             :replaces "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-                            :doc  "A whole lower-case UUID."}
+                            :doc  "A whole lower-case UUID. Strict: upper case is REFUSED; use :hive.pattern/uuid-anywhere for a case-insensitive or embedded match."}
+   :hive.pattern/hex64-anywhere
+   {:form (hex 64) :replaces-find "[0-9a-f]{64}"
+    :doc  "A SHA-256 digest ANYWHERE in the subject — the unanchored sibling of :hive.pattern/hex64 (funeraria audit D8)."}
+   :hive.pattern/hex40-anywhere
+   {:form (hex 40) :replaces-find "[0-9a-f]{40}"
+    :doc  "A git object id (SHA-1) ANYWHERE in the subject — the unanchored sibling of :hive.pattern/hex40."}
+   :hive.pattern/hex32-anywhere
+   {:form (hex 32) :replaces-find "[0-9a-f]{32}"
+    :doc  "A 32-digit lower-case hex id ANYWHERE in the subject — the unanchored sibling of :hive.pattern/hex32."}
+   :hive.pattern/uuid-anywhere
+   {:form [:cat (hex-ci 8) "-" (hex-ci 4) "-" (hex-ci 4) "-" (hex-ci 4) "-" (hex-ci 12)]
+    :replaces-find "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    :flags #{:case-insensitive}
+    :doc  "A UUID ANYWHERE in the subject, either case — the unanchored sibling of :hive.pattern/uuid (funeraria audit D7). Carries :flags #{:case-insensitive}; the class spells both cases too, so the emitted source is explicit."}
+   :hive.pattern/sha256-prefixed
+   {:form (whole "sha256:" (hex 64)) :replaces "^sha256:[0-9a-f]{64}$"
+    :doc  "A whole content digest with its algorithm prefix: `sha256:` then a lower-case 64-hex digest."}
    :hive.pattern/memory-id {:form (whole [:repeat :digit 14 14] "-" (hex 8))
                             :replaces "^\\d{14}-[0-9a-f]{8}$"
                             :doc  "A whole hive memory entry id: 14 digits, a dash, 8 hex digits."}
    :hive.pattern/digits    {:form (whole [:+ :digit]) :replaces "^\\d+$"
                             :doc  "A whole run of decimal digits."}
+   :hive.pattern/digits-anywhere
+   {:form [:+ :digit] :replaces-find "\\d+"
+    :doc  "A run of decimal digits ANYWHERE in the subject — the unanchored sibling of :hive.pattern/digits, for the `re-find #\"\\d+\"` sites (37 in hive)."}
    :hive.pattern/slug      {:form (whole [:class [\a \z]] [:* [:class [\a \z] [\0 \9] \-]])
                             :replaces "^[a-z][a-z0-9\\-]*$"
                             :doc  "A whole lower-case slug: a letter, then letters, digits and dashes."}
    :hive.pattern/ws-run    {:form [:+ ascii-whitespace]
                             :replaces "[ \t\n\u000B\f\r]+"
-                            :doc  "A run of ASCII whitespace, exactly Java's `\\s+`. The emitter writes the control characters raw, so `:replaces` holds them raw too."}})
+                            :aliases ["\\s+" "[\\s]+"]
+                            :doc  "A run of ASCII whitespace, exactly Java's `\\s+`. The emitter writes the control characters raw, so `:replaces` holds them raw too. `\\s+` and `[\\s]+` are aliases: Java's `\\s` IS `[ \t\n\u000B\f\r]`, so they match the same strings and a rewrite cannot change behaviour. `\\s` alone (one char) and `[ \t]+` (no newline) are NOT aliases — they are separate clusters and get no entry unless they meet the bar on their own."}})
 
 (defn register-all!
   "Register every `catalog` entry. Returns {id Result<Pattern>}."
@@ -63,12 +126,68 @@
   "Registers the catalog on load. `def`, not `defonce`, so a reload re-registers."
   (register-all!))
 
+(defn select-source
+  "Result<String>: the Java source ENTRY compiles to under OPTS. PURE.
+
+   Default is `:replaces`, the anchored whole-string form. `{:mode :find}`
+   selects `:replaces-find`, the unanchored form; an entry that declares none is
+   REFUSED (`:pattern/no-find-variant`) rather than silently falling back to the
+   anchored source, because the two match different strings."
+  [id entry {:keys [mode]}]
+  (cond
+    (nil? entry)                          (r/err :pattern/unknown {:id id})
+    (and (= :find mode) (nil? (:replaces-find entry)))
+    (r/err :pattern/no-find-variant {:id id})
+    (= :find mode)                        (r/ok (:replaces-find entry))
+    :else                                 (r/ok (or (:replaces entry) (:replaces-find entry)))))
+
+(m/=> select-source [:=> [:cat :keyword :any [:map]] :any])
+
+(def MatchesOpts
+  "The OPTS of the `[id s opts]` arity, as a CLOSED map. `:mode` is `:find` or
+   absent; `:flags` is a set of supported `Flag` values or absent. A key the
+   schema does not name, a `:mode` that is not `:find`, or a `:flags` that is not
+   a set of Flags is REFUSED as `:pattern/bad-opts` with the malli explanation —
+   never thrown, never silently ignored. `nil` and `{}` both mean the default."
+  [:map {:closed true}
+   [:mode {:optional true} [:enum :find]]
+   [:flags {:optional true} [:set ps/Flag]]])
+
 (defn matches?
   "True when the catalog pattern `id` occurs in `s`. A non-string `s` is false.
    An id outside the registry is false too; `catalog-registered?` is the test
-   that keeps every catalog id resolvable."
-  [id s]
-  (boolean (and (string? s) (true? (:ok (p/match? id s))))))
+   that keeps every catalog id resolvable.
+
+   With OPTS the call returns Result<boolean> and can say more than the
+   whole-string form:
+
+     (matches? :hive.pattern/digits-anywhere s {:mode :find})
+     (matches? :hive.pattern/uuid s {:flags #{:case-insensitive}})
+
+   OPTS is validated against `MatchesOpts` before anything else, so a malformed
+   map is REFUSED as `:pattern/bad-opts` carrying the malli explanation — the
+   call stays on the Result railway and never throws, never falls back. `nil` and
+   `{}` both mean the default.
+
+   `:mode :find` matches the entry's `:replaces-find` — its unanchored form —
+   and REFUSES with `:pattern/no-find-variant` when the entry declares none,
+   because a concept with no unanchored form must not be searched unanchored by
+   accident. `:flags` are threaded into the Pattern before `compile-pattern`,
+   united with any `:flags` the entry itself declares; a flag the engine cannot
+   honour is refused (`:pattern/unsupported-flag`), never dropped."
+  ([id s]
+   (boolean (and (string? s) (true? (:ok (p/match? id s))))))
+  ([id s opts]
+   (if-let [explain (and (some? opts) (m/explain MatchesOpts opts))]
+     (r/err :pattern/bad-opts {:id id :opts opts :explain explain})
+     (if-not (string? s)
+       (r/ok false)
+       (let [entry (get catalog id)
+             fs    (into (or (:flags entry) #{}) (or (:flags opts) #{}))]
+         (r/let-ok [src (select-source id entry opts)]
+                   (p/match? (cond-> {:pattern/expr src}
+                               (seq fs) (assoc :pattern/flags fs))
+                             s)))))))
 
 (defn catalog-registered?
   "True when every `catalog` id resolves in the live registry."
